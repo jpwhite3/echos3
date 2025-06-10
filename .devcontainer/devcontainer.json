@@ -1,0 +1,36 @@
+{
+  "name": "EchoS3 Go Dev Container",
+  // Tells VS Code how to build the container image.
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+
+  // VS Code specific settings
+  "customizations": {
+    "vscode":{
+      "settings": {
+        // Set the Go path within the container
+        "go.gopath": "/go"
+      },
+        // A list of VS Code extensions to automatically install inside the container.
+      "extensions": [
+        "golang.Go", // The official Go extension
+        "eamodio.gitlens", // For better Git integration
+        "ms-azuretools.vscode-docker" // For Docker integration
+      ],
+    }
+  },
+
+  // Forward the user's local Git credentials into the container
+  "mounts": [
+    "source=${localEnv:HOME}/.gitconfig,target=/home/vscode/.gitconfig,type=bind,consistency=cached"
+  ],
+
+  // Runs after the container is created.
+  // This command installs the Go module dependencies.
+  "postCreateCommand": "go mod tidy",
+
+  // Tells VS Code to run as the non-root 'vscode' user from the Dockerfile.
+  "remoteUser": "vscode"
+}
