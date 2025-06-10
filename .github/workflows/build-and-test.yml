@@ -34,8 +34,19 @@ jobs:
         with:
           version: v1.57
 
-      - name: Run Unit Tests
-        run: go test -v ./...
+      - name: Run Unit Tests with Coverage
+        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Generate HTML coverage report
+        run: go tool cover -html=coverage.out -o coverage.html
+
+      - name: Upload coverage report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.out
+            coverage.html
 
       - name: Build Binary
         run: go build -v -o echos3 .
