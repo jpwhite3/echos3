@@ -71,7 +71,7 @@ func main() {
 	flag.Parse()
 
 	if *versionFlag {
-		fmt.Println("echos3 version", Version)
+		fmt.Printf("echos3 version %s\n", Version)
 		os.Exit(0)
 	}
 
@@ -83,20 +83,20 @@ func main() {
 
 	localPath, err := filepath.Abs(args[0])
 	if err != nil {
-		log.Fatalf("Invalid local path: %v", err)
+		log.Fatalf("FATAL: Invalid local path: %v", err)
 	}
 	s3Path := args[1]
 
 	bucket, keyPrefix, err := parseS3Path(s3Path)
 	if err != nil {
-		log.Fatalf("Invalid S3 path: %v", err)
+		log.Fatalf("FATAL: Invalid S3 path: %v", err)
 	}
 
 	// Create the S3 client
 	ctx := context.Background()
 	s3Client, err := newS3Client(ctx)
 	if err != nil {
-		log.Fatalf("Failed to create S3 client: %v", err)
+		log.Fatalf("FATAL: Failed to create S3 client: %v", err)
 	}
 
 	// Create and run the application
@@ -110,7 +110,7 @@ func main() {
 	}
 
 	if err := app.run(ctx); err != nil {
-		log.Fatalf("Application error: %v", err)
+		log.Fatalf("FATAL: Application failed: %v", err)
 	}
 }
 
@@ -120,10 +120,14 @@ func (a *App) run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("could not create file watcher: %w", err)
 	}
-	defer watcher.Close()
+	defer func() {
+		if err := watcher.Close(); err != nil {
+			log.Printf("ERROR: Could not close watcher: %v", err)
+		}
+	}()
 
 	// Initial sync: walk the local path and add all directories to the watcher.
-	log.Printf("Performing initial scan of %s...", a.localPath)
+	log.Printf("INFO: Performing initial scan of %s...", a.localPath)
 	err = filepath.Walk(a.localPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -139,7 +143,7 @@ func (a *App) run(ctx context.Context) error {
 		return fmt.Errorf("error during initial directory scan: %w", err)
 	}
 
-	log.Printf("Watching %s for changes. Uploading to s3://%s/%s", a.localPath, a.bucket, a.keyPrefix)
+	log.Printf("INFO: Watching for changes. Uploading to s3://%s/%s", a.bucket, a.keyPrefix)
 
 	// Main event loop
 	for {
@@ -153,7 +157,7 @@ func (a *App) run(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			log.Printf("Watcher error: %v", err)
+			log.Printf("ERROR: Watcher error: %v", err)
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -164,7 +168,7 @@ func (a *App) run(ctx context.Context) error {
 func (a *App) handleEvent(ctx context.Context, event fsnotify.Event, watcher *fsnotify.Watcher) {
 	relPath, err := filepath.Rel(a.localPath, event.Name)
 	if err != nil {
-		log.Printf("Could not determine relative path for %s: %v", event.Name, err)
+		log.Printf("ERROR: Could not determine relative path for %s: %v", event.Name, err)
 		return
 	}
 	s3Key := filepath.ToSlash(filepath.Join(a.keyPrefix, relPath))
@@ -177,27 +181,24 @@ func (a *App) handleEvent(ctx context.Context, event fsnotify.Event, watcher *fs
 		info, err := os.Stat(event.Name)
 		if err != nil {
 			if os.IsNotExist(err) {
-				// This can happen if a file is created and deleted quickly (e.g., temp files)
-				// Or if it was a rename source, which we handle as a delete below.
 				a.handleRemove(ctx, s3Key)
 			} else {
-				log.Printf("Error stating file %s: %v", event.Name, err)
+				log.Printf("ERROR: Could not stat file %s: %v", event.Name, err)
 			}
 			return
 		}
 
 		if info.IsDir() {
 			if err := watcher.Add(event.Name); err != nil {
-				log.Printf("Failed to add new directory to watcher %s: %v", event.Name, err)
+				log.Printf("ERROR: Failed to add new directory to watcher %s: %v", event.Name, err)
+			} else {
+				log.Printf("INFO: Watching new directory: %s", event.Name)
 			}
-			log.Printf("Now watching new directory: %s", event.Name)
 		} else {
 			a.handleUpload(ctx, event.Name, s3Key)
 		}
 	} else if op&fsnotify.Remove == fsnotify.Remove {
-		// The file is gone, so we don't need to check if it's a directory
 		a.handleRemove(ctx, s3Key)
-		// We don't need to explicitly remove from watcher, fsnotify handles it.
 	}
 }
 
@@ -205,12 +206,18 @@ func (a *App) handleEvent(ctx context.Context, event fsnotify.Event, watcher *fs
 func (a *App) handleUpload(ctx context.Context, localFile, s3Key string) {
 	file, err := os.Open(localFile)
 	if err != nil {
-		log.Printf("Could not open file for upload %s: %v", localFile, err)
+		log.Printf("ERROR: Could not open file for upload %s: %v", localFile, err)
 		return
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			log.Printf("ERROR: Could not close file %s: %v", localFile, err)
+		}
+	}()
 
-	log.Printf("Uploading %s to s3://%s/%s", localFile, a.bucket, s3Key)
+	s3URI := fmt.Sprintf("s3://%s/%s", a.bucket, s3Key)
+	log.Printf("UPLOAD: %s -> %s", filepath.Base(localFile), s3URI)
+
 	input := &s3.PutObjectInput{
 		Bucket:       aws.String(a.bucket),
 		Key:          aws.String(s3Key),
@@ -220,25 +227,26 @@ func (a *App) handleUpload(ctx context.Context, localFile, s3Key string) {
 
 	_, err = a.uploader.Upload(ctx, input)
 	if err != nil {
-		log.Printf("Failed to upload %s: %v", localFile, err)
+		log.Printf("ERROR: Failed to upload %s: %v", localFile, err)
 	}
 }
 
 // handleRemove deletes a single object from S3 if the --delete flag is set.
 func (a *App) handleRemove(ctx context.Context, s3Key string) {
 	if !a.delete {
-		log.Printf("File removed locally but --delete is not set. Ignoring: %s", s3Key)
+		log.Printf("INFO: File removed locally but --delete is not set. Ignoring: %s", s3Key)
 		return
 	}
 
-	log.Printf("Deleting s3://%s/%s", a.bucket, s3Key)
+	s3URI := fmt.Sprintf("s3://%s/%s", a.bucket, s3Key)
+	log.Printf("DELETE: %s", s3URI)
 	input := &s3.DeleteObjectInput{
 		Bucket: aws.String(a.bucket),
 		Key:    aws.String(s3Key),
 	}
 	_, err := a.uploader.DeleteObject(ctx, input)
 	if err != nil {
-		log.Printf("Failed to delete %s from S3: %v", s3Key, err)
+		log.Printf("ERROR: Failed to delete %s from S3: %v", s3Key, err)
 	}
 }
 

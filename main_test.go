@@ -29,7 +29,11 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		log.Fatalf("failed to create temp dir for test binary: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			log.Printf("Error removing temp dir %s: %v", tmpDir, err)
+		}
+	}()
 
 	testBinaryPath = filepath.Join(tmpDir, "echos3")
 	if runtime.GOOS == "windows" {
@@ -131,7 +135,11 @@ func TestApp_handleEvent(t *testing.T) {
 	// Create a dummy watcher, we don't need it to do anything for this test
 	watcher, err := fsnotify.NewWatcher()
 	require.NoError(t, err)
-	defer watcher.Close()
+	defer func() {
+		if err := watcher.Close(); err != nil {
+			t.Logf("Error closing watcher: %v", err)
+		}
+	}()
 
 	t.Run("Create file should trigger upload", func(t *testing.T) {
 		app, mockUploader, tmpDir := newTestApp(t, false)
