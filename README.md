@@ -22,7 +22,7 @@ The recommended way to install on macOS is via Homebrew.
 
 **Tap the repository:**
 
-`brew tap your-github-username/echos3`
+`brew tap jpwhite3/echos3`
 
 **Install EchoS3:**
 
@@ -34,7 +34,7 @@ If you have Go installed, you can build EchoS3 from the source.
 
 **Clone the repository:**
 ```
-git clone https://github.com/your-github-username/echos3.git
+git clone https://github.com/jpwhite3/echos3.git
 cd echos3
 ```
 

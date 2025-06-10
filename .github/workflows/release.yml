@@ -89,7 +89,7 @@ jobs:
             echos3-windows-amd64.exe
 
       - name: Update Homebrew Tap
-        uses: mislav/bump-homebrew-formula-action@v4
+        uses: mislav/bump-homebrew-formula-action@v3
         with:
           # The GitHub token is NOT a personal access token.
           # It's a special token granted to the workflow.
@@ -97,6 +97,6 @@ jobs:
           # The path to your formula file in the tap repository
           formula_path: 'echos3.rb'
           # The tap repository in the format 'owner/repo'
-          tap_repository: 'your-github-username/homebrew-echos3'
+          tap_repository: 'jpwhite3/homebrew-echos3'
           # The commit message for the tap repository
           commit_message: 'chore: update echos3 formula to v{{version}}'

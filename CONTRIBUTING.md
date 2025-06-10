@@ -10,7 +10,7 @@ This project and everyone participating in it is governed by the [EchoS3 Code of
 
 ### Reporting Bugs
 
-If you find a bug, please ensure the bug was not already reported by searching on GitHub under [Issues](https://github.com/your-github-username/echos3/issues). If you're unable to find an open issue addressing the problem, [open a new one](https://github.com/your-github-username/echos3/issues/new). Be sure to include a title and clear description, as much relevant information as possible, and a code sample or an executable test case demonstrating the expected behavior that is not occurring.
+If you find a bug, please ensure the bug was not already reported by searching on GitHub under [Issues](https://github.com/jpwhite3/echos3/issues). If you're unable to find an open issue addressing the problem, [open a new one](https://github.com/jpwhite3/echos3/issues/new). Be sure to include a title and clear description, as much relevant information as possible, and a code sample or an executable test case demonstrating the expected behavior that is not occurring.
 
 ### Suggesting Enhancements
 
