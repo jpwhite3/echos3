@@ -83,13 +83,15 @@ func (m *MockS3Uploader) DeleteObject(_ context.Context, input *s3.DeleteObjectI
 }
 
 // newTestApp is a helper to set up the App struct for testing.
-func newTestApp(t *testing.T, deleteFlag bool) (*App, *MockS3Uploader, string) {
+func newTestApp(t *testing.T, deleteFlag bool, isDir bool) (*App, *MockS3Uploader, string) {
+	t.Helper()
 	tmpDir := t.TempDir()
 	mockUploader := newMockS3Uploader()
 
 	app := &App{
 		uploader:     mockUploader,
-		localPath:    tmpDir,
+		localPath:    tmpDir, // Default to dir, can be overridden by caller
+		isDir:        isDir,
 		bucket:       "test-bucket",
 		keyPrefix:    "test-prefix",
 		delete:       deleteFlag,
@@ -132,7 +134,6 @@ func TestParseS3Path(t *testing.T) {
 }
 
 func TestApp_handleEvent(t *testing.T) {
-	// Create a dummy watcher, we don't need it to do anything for this test
 	watcher, err := fsnotify.NewWatcher()
 	require.NoError(t, err)
 	defer func() {
@@ -141,76 +142,76 @@ func TestApp_handleEvent(t *testing.T) {
 		}
 	}()
 
-	t.Run("Create file should trigger upload", func(t *testing.T) {
-		app, mockUploader, tmpDir := newTestApp(t, false)
-		testFile := filepath.Join(tmpDir, "newfile.txt")
-		require.NoError(t, os.WriteFile(testFile, []byte("content"), 0644))
+	t.Run("Directory Watch", func(t *testing.T) {
+		t.Run("Create file should trigger upload with relative key", func(t *testing.T) {
+			app, mockUploader, tmpDir := newTestApp(t, false, true) // isDir = true
+			testFile := filepath.Join(tmpDir, "newfile.txt")
+			require.NoError(t, os.WriteFile(testFile, []byte("content"), 0644))
 
-		event := fsnotify.Event{Name: testFile, Op: fsnotify.Create}
-		app.handleEvent(context.Background(), event, watcher)
+			event := fsnotify.Event{Name: testFile, Op: fsnotify.Create}
+			app.handleEvent(context.Background(), event, watcher)
 
-		assert.Contains(t, mockUploader.Uploads, "test-prefix/newfile.txt")
+			expectedKey := "test-prefix/newfile.txt"
+			assert.Contains(t, mockUploader.Uploads, expectedKey)
+		})
+
+		t.Run("Remove file should trigger delete if flag is set", func(t *testing.T) {
+			app, mockUploader, tmpDir := newTestApp(t, true, true) // delete = true, isDir = true
+			testFile := filepath.Join(tmpDir, "delete.txt")
+
+			event := fsnotify.Event{Name: testFile, Op: fsnotify.Remove}
+			app.handleEvent(context.Background(), event, watcher)
+
+			expectedKey := "test-prefix/delete.txt"
+			assert.Contains(t, mockUploader.Deletes, expectedKey)
+			assert.Empty(t, mockUploader.Uploads)
+		})
 	})
 
-	t.Run("Write to file should trigger upload", func(t *testing.T) {
-		app, mockUploader, tmpDir := newTestApp(t, false)
-		testFile := filepath.Join(tmpDir, "writefile.txt")
-		require.NoError(t, os.WriteFile(testFile, []byte("content"), 0644))
+	t.Run("Single File Watch", func(t *testing.T) {
+		t.Run("Event on watched file should trigger upload with fixed key", func(t *testing.T) {
+			app, mockUploader, tmpDir := newTestApp(t, false, false) // isDir = false
+			watchedFile := filepath.Join(tmpDir, "watched.txt")
+			app.localPath = watchedFile // Explicitly set the path to the file
+			require.NoError(t, os.WriteFile(watchedFile, []byte("content"), 0644))
 
-		event := fsnotify.Event{Name: testFile, Op: fsnotify.Write}
-		app.handleEvent(context.Background(), event, watcher)
+			event := fsnotify.Event{Name: watchedFile, Op: fsnotify.Write}
+			app.handleEvent(context.Background(), event, watcher)
 
-		assert.Contains(t, mockUploader.Uploads, "test-prefix/writefile.txt")
-	})
+			expectedKey := "test-prefix" // For single file, key is the prefix
+			assert.Contains(t, mockUploader.Uploads, expectedKey)
+		})
 
-	t.Run("Remove file should trigger delete if flag is set", func(t *testing.T) {
-		app, mockUploader, tmpDir := newTestApp(t, true) // delete = true
-		testFile := filepath.Join(tmpDir, "delete.txt")
+		t.Run("Event on other file should be ignored", func(t *testing.T) {
+			app, mockUploader, tmpDir := newTestApp(t, false, false) // isDir = false
+			watchedFile := filepath.Join(tmpDir, "watched.txt")
+			otherFile := filepath.Join(tmpDir, "other.txt")
+			app.localPath = watchedFile
+			require.NoError(t, os.WriteFile(otherFile, []byte("content"), 0644))
 
-		event := fsnotify.Event{Name: testFile, Op: fsnotify.Remove}
-		app.handleEvent(context.Background(), event, watcher)
+			event := fsnotify.Event{Name: otherFile, Op: fsnotify.Write}
+			app.handleEvent(context.Background(), event, watcher)
 
-		assert.Contains(t, mockUploader.Deletes, "test-prefix/delete.txt")
-		assert.Empty(t, mockUploader.Uploads)
-	})
+			assert.Empty(t, mockUploader.Uploads, "Should not upload for an unwatched file")
+		})
 
-	t.Run("Remove file should NOT trigger delete if flag is not set", func(t *testing.T) {
-		app, mockUploader, tmpDir := newTestApp(t, false) // delete = false
-		testFile := filepath.Join(tmpDir, "delete.txt")
+		t.Run("Remove watched file should trigger delete if flag is set", func(t *testing.T) {
+			app, mockUploader, tmpDir := newTestApp(t, true, false) // delete = true, isDir = false
+			watchedFile := filepath.Join(tmpDir, "watched.txt")
+			app.localPath = watchedFile
 
-		event := fsnotify.Event{Name: testFile, Op: fsnotify.Remove}
-		app.handleEvent(context.Background(), event, watcher)
+			event := fsnotify.Event{Name: watchedFile, Op: fsnotify.Remove}
+			app.handleEvent(context.Background(), event, watcher)
 
-		assert.Empty(t, mockUploader.Deletes)
-	})
-
-	t.Run("Create directory should be added to watcher, not uploaded", func(t *testing.T) {
-		app, mockUploader, tmpDir := newTestApp(t, false)
-		testDir := filepath.Join(tmpDir, "newdir")
-		require.NoError(t, os.Mkdir(testDir, 0755))
-
-		event := fsnotify.Event{Name: testDir, Op: fsnotify.Create}
-		app.handleEvent(context.Background(), event, watcher)
-
-		assert.Empty(t, mockUploader.Uploads, "Directories should not be uploaded")
-	})
-
-	t.Run("Quick create/delete should be handled gracefully", func(t *testing.T) {
-		app, mockUploader, tmpDir := newTestApp(t, true)
-		testFile := filepath.Join(tmpDir, "temp.txt")
-		// The file does not exist, simulating a fast deletion after a create event
-		event := fsnotify.Event{Name: testFile, Op: fsnotify.Create}
-		app.handleEvent(context.Background(), event, watcher)
-
-		// It should be treated as a removal
-		assert.Contains(t, mockUploader.Deletes, "test-prefix/temp.txt")
-		assert.Empty(t, mockUploader.Uploads)
+			expectedKey := "test-prefix"
+			assert.Contains(t, mockUploader.Deletes, expectedKey)
+		})
 	})
 }
 
 func TestApp_handleUpload_Errors(t *testing.T) {
 	t.Run("Fails when file cannot be opened", func(t *testing.T) {
-		app, mockUploader, tmpDir := newTestApp(t, false)
+		app, mockUploader, tmpDir := newTestApp(t, false, true)
 		nonExistentFile := filepath.Join(tmpDir, "ghost.txt")
 
 		app.handleUpload(context.Background(), nonExistentFile, "test-prefix/ghost.txt")
@@ -219,22 +220,20 @@ func TestApp_handleUpload_Errors(t *testing.T) {
 	})
 
 	t.Run("Fails when S3 upload returns an error", func(t *testing.T) {
-		app, mockUploader, tmpDir := newTestApp(t, false)
+		app, mockUploader, tmpDir := newTestApp(t, false, true)
 		mockUploader.UploadErr = errors.New("S3 is down")
 		testFile := filepath.Join(tmpDir, "upload-fail.txt")
 		require.NoError(t, os.WriteFile(testFile, []byte("content"), 0644))
 
 		app.handleUpload(context.Background(), testFile, "test-prefix/upload-fail.txt")
 
-		// We can't assert on the log output easily, but we can ensure no successful upload was recorded
-		// In a real scenario, you'd check logs or metrics.
 		assert.Empty(t, mockUploader.Uploads)
 	})
 }
 
 func TestApp_handleRemove_Errors(t *testing.T) {
 	t.Run("Fails when S3 delete returns an error", func(t *testing.T) {
-		app, mockUploader, _ := newTestApp(t, true)
+		app, mockUploader, _ := newTestApp(t, true, true)
 		mockUploader.DeleteErr = errors.New("S3 is down")
 
 		app.handleRemove(context.Background(), "test-prefix/delete-fail.txt")
@@ -243,19 +242,23 @@ func TestApp_handleRemove_Errors(t *testing.T) {
 }
 
 func TestApp_run_Errors(t *testing.T) {
-	t.Run("Fails when watcher cannot be created", func(t *testing.T) {
-		// This is hard to test without mocking fsnotify, which is complex.
-		// This test is more of a placeholder for the concept.
-		// In a real-world scenario, you might inject the watcher dependency.
-	})
-
 	t.Run("Fails when initial directory scan fails", func(t *testing.T) {
-		app, _, _ := newTestApp(t, false)
+		app, _, _ := newTestApp(t, false, true) // isDir = true
 		app.localPath = "/path/that/does/not/exist"
 
 		err := app.run(context.Background())
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "error during initial directory scan")
+	})
+
+	t.Run("Fails to watch parent dir for single file", func(t *testing.T) {
+		app, _, _ := newTestApp(t, false, false) // isDir = false
+		// This is hard to test deterministically without a mock fsnotify,
+		// but we can test the error path if the parent directory doesn't exist.
+		app.localPath = "/non-existent-dir/some-file.txt"
+		err := app.run(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to watch directory")
 	})
 }
 

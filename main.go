@@ -56,6 +56,7 @@ func newS3Client(ctx context.Context) (*S3Client, error) {
 type App struct {
 	uploader     S3Uploader
 	localPath    string
+	isDir        bool // True if localPath is a directory
 	bucket       string
 	keyPrefix    string
 	delete       bool
@@ -85,6 +86,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("FATAL: Invalid local path: %v", err)
 	}
+
+	pathInfo, err := os.Stat(localPath)
+	if err != nil {
+		log.Fatalf("FATAL: Could not access path %s: %v", localPath, err)
+	}
+
 	s3Path := args[1]
 
 	bucket, keyPrefix, err := parseS3Path(s3Path)
@@ -103,6 +110,7 @@ func main() {
 	app := &App{
 		uploader:     s3Client,
 		localPath:    localPath,
+		isDir:        pathInfo.IsDir(),
 		bucket:       bucket,
 		keyPrefix:    keyPrefix,
 		delete:       *deleteFlag,
@@ -126,24 +134,32 @@ func (a *App) run(ctx context.Context) error {
 		}
 	}()
 
-	// Initial sync: walk the local path and add all directories to the watcher.
-	log.Printf("INFO: Performing initial scan of %s...", a.localPath)
-	err = filepath.Walk(a.localPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			if err := watcher.Add(path); err != nil {
-				return fmt.Errorf("failed to add path to watcher %s: %w", path, err)
+	if a.isDir {
+		// If the path is a directory, walk it and add all subdirectories.
+		log.Printf("INFO: Performing initial scan of directory %s...", a.localPath)
+		err = filepath.Walk(a.localPath, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
 			}
+			if info.IsDir() {
+				if err := watcher.Add(path); err != nil {
+					return fmt.Errorf("failed to add path to watcher %s: %w", path, err)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("error during initial directory scan: %w", err)
 		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("error during initial directory scan: %w", err)
+		log.Printf("INFO: Watching directory for changes. Uploading to s3://%s/%s", a.bucket, a.keyPrefix)
+	} else {
+		// If the path is a file, watch its parent directory.
+		parentDir := filepath.Dir(a.localPath)
+		log.Printf("INFO: Watching single file %s in directory %s", filepath.Base(a.localPath), parentDir)
+		if err := watcher.Add(parentDir); err != nil {
+			return fmt.Errorf("failed to watch directory %s for file changes: %w", parentDir, err)
+		}
 	}
-
-	log.Printf("INFO: Watching for changes. Uploading to s3://%s/%s", a.bucket, a.keyPrefix)
 
 	// Main event loop
 	for {
@@ -166,12 +182,24 @@ func (a *App) run(ctx context.Context) error {
 
 // handleEvent processes a single file system event.
 func (a *App) handleEvent(ctx context.Context, event fsnotify.Event, watcher *fsnotify.Watcher) {
-	relPath, err := filepath.Rel(a.localPath, event.Name)
-	if err != nil {
-		log.Printf("ERROR: Could not determine relative path for %s: %v", event.Name, err)
+	// If watching a single file, ignore events for any other file.
+	if !a.isDir && event.Name != a.localPath {
 		return
 	}
-	s3Key := filepath.ToSlash(filepath.Join(a.keyPrefix, relPath))
+
+	var s3Key string
+	if a.isDir {
+		// For directories, the S3 key is relative to the watched directory.
+		relPath, err := filepath.Rel(a.localPath, event.Name)
+		if err != nil {
+			log.Printf("ERROR: Could not determine relative path for %s: %v", event.Name, err)
+			return
+		}
+		s3Key = filepath.ToSlash(filepath.Join(a.keyPrefix, relPath))
+	} else {
+		// For a single file, the S3 key is simply the key prefix provided.
+		s3Key = a.keyPrefix
+	}
 
 	op := event.Op
 	// Handle writes, creates, and renames as upload events
@@ -189,10 +217,12 @@ func (a *App) handleEvent(ctx context.Context, event fsnotify.Event, watcher *fs
 		}
 
 		if info.IsDir() {
-			if err := watcher.Add(event.Name); err != nil {
-				log.Printf("ERROR: Failed to add new directory to watcher %s: %v", event.Name, err)
-			} else {
-				log.Printf("INFO: Watching new directory: %s", event.Name)
+			if a.isDir { // Only add new directories if we are watching a directory tree
+				if err := watcher.Add(event.Name); err != nil {
+					log.Printf("ERROR: Failed to add new directory to watcher %s: %v", event.Name, err)
+				} else {
+					log.Printf("INFO: Watching new directory: %s", event.Name)
+				}
 			}
 		} else {
 			a.handleUpload(ctx, event.Name, s3Key)
