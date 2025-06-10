@@ -1,0 +1,41 @@
+# .github/workflows/build-and-test.yml
+name: Build and Test
+
+# This workflow runs on every push to any branch except 'main',
+# and on every pull request that targets the 'main' or 'develop' branches.
+on:
+  push:
+    branches:
+      - '**' # All branches
+      - '!main' # Exclude main
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21' # Specify your Go version
+
+      - name: Install Dependencies
+        run: go mod tidy
+
+      - name: Run Linter
+        uses: golangci/golangci-lint-action@v4
+        with:
+          version: v1.57
+
+      - name: Run Unit Tests
+        run: go test -v ./...
+
+      - name: Build Binary
+        run: go build -v -o echos3 .

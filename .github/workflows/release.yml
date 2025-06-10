@@ -1,0 +1,102 @@
+# .github/workflows/release.yml
+name: Release EchoS3
+
+# This workflow runs ONLY on pushes to the 'main' branch.
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    name: Create Release and Update Tap
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed to create releases and commit to the repo
+      pull-requests: write # Needed to create pull requests in the tap repo
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          # Fetch all history so that git-cliff can generate a changelog
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Generate Changelog
+        uses: orhun/git-cliff-action@v3
+        id: git-cliff
+        with:
+          config: |
+            [changelog]
+            header = "# Changelog\n\n"
+            body = """
+            {% for group, commits in commits | group_by(attribute="group") %}
+                ### {{ group | upper_first }}
+                {% for commit in commits %}
+                    - {% if commit.scope %}(**{{ commit.scope }}**) {% endif %}{{ commit.message | upper_first }} ({{ commit.id | truncate(length=7, end="") }})
+                {% endfor %}
+            {% endfor %}
+            """
+            footer = ""
+            trim = true
+            [git]
+            conventional_commits = true
+            filter_unconventional = true
+            commit_parsers = [
+              { message = "^feat", group = "Features" },
+              { message = "^fix", group = "Bug Fixes" },
+              { message = "^docs", group = "Documentation" },
+              { message = "^style", group = "Styling" },
+              { message = "^refactor", group = "Refactoring" },
+              { message = "^test", group = "Testing" },
+              { message = "^chore", group = "Chores" },
+              { message = "^revert", group = "Reverts" },
+            ]
+        env:
+          # This will generate a changelog for the latest tag
+          OUTPUT: CHANGELOG.md
+
+      - name: Get next version
+        id: version
+        uses: reecetech/version-increment@2024.4.2
+        with:
+          scheme: semver
+          increment: patch
+
+      - name: Build Release Binaries
+        run: |
+          GOOS=darwin GOARCH=amd64 go build -ldflags="-X main.Version=${{ steps.version.outputs.version }}" -o echos3-darwin-amd64
+          GOOS=darwin GOARCH=arm64 go build -ldflags="-X main.Version=${{ steps.version.outputs.version }}" -o echos3-darwin-arm64
+          GOOS=linux GOARCH=amd64 go build -ldflags="-X main.Version=${{ steps.version.outputs.version }}" -o echos3-linux-amd64
+          GOOS=windows GOARCH=amd64 go build -ldflags="-X main.Version=${{ steps.version.outputs.version }}" -o echos3-windows-amd64.exe
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: 'v${{ steps.version.outputs.version }}'
+          name: 'Release v${{ steps.version.outputs.version }}'
+          body_path: 'CHANGELOG.md'
+          files: |
+            echos3-darwin-amd64
+            echos3-darwin-arm64
+            echos3-linux-amd64
+            echos3-windows-amd64.exe
+
+      - name: Update Homebrew Tap
+        uses: mislav/bump-homebrew-formula-action@v4
+        with:
+          # The GitHub token is NOT a personal access token.
+          # It's a special token granted to the workflow.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # The path to your formula file in the tap repository
+          formula_path: 'echos3.rb'
+          # The tap repository in the format 'owner/repo'
+          tap_repository: 'your-github-username/homebrew-echos3'
+          # The commit message for the tap repository
+          commit_message: 'chore: update echos3 formula to v{{version}}'
