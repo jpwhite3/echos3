@@ -43,8 +43,11 @@ func (c *S3Client) DeleteObject(ctx context.Context, input *s3.DeleteObjectInput
 	return c.client.DeleteObject(ctx, input)
 }
 
+// S3ClientCreator is a function type for creating S3 clients
+type S3ClientCreator func(ctx context.Context) (*S3Client, error)
+
 // newS3Client creates a new S3 client wrapper.
-func newS3Client(ctx context.Context) (*S3Client, error) {
+var newS3Client S3ClientCreator = func(ctx context.Context) (*S3Client, error) {
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("unable to load AWS SDK config: %w", err)
@@ -63,58 +66,110 @@ type App struct {
 	storageClass types.StorageClass
 }
 
-// main is the entry point of the application.
-func main() {
-	// Define and parse command-line flags
+// AppConfig holds the configuration for the application.
+type AppConfig struct {
+	LocalPath    string
+	Bucket       string
+	KeyPrefix    string
+	Delete       bool
+	StorageClass types.StorageClass
+}
+
+// parseFlags parses command-line flags and returns the configuration.
+func parseFlags() (showVersion bool, config *AppConfig, args []string, err error) {
 	deleteFlag := flag.Bool("delete", false, "Delete files in S3 when they are deleted locally.")
 	storageClassFlag := flag.String("storage-class", string(types.StorageClassIntelligentTiering), "Specify the S3 storage class (e.g., STANDARD, GLACIER).")
 	versionFlag := flag.Bool("version", false, "Print the echos3 version and exit.")
 	flag.Parse()
 
-	if *versionFlag {
-		fmt.Printf("echos3 version %s\n", Version)
-		os.Exit(0)
+	config = &AppConfig{
+		Delete:       *deleteFlag,
+		StorageClass: types.StorageClass(*storageClassFlag),
 	}
 
-	// Validate command-line arguments
-	args := flag.Args()
+	return *versionFlag, config, flag.Args(), nil
+}
+
+// validateArgs validates command-line arguments and returns the local path and S3 path.
+func validateArgs(args []string) (string, string, error) {
 	if len(args) != 2 {
-		log.Fatal("Usage: echos3 /path/to/watch s3://bucket/key [--delete] [--storage-class STORAGE_CLASS]")
+		return "", "", errors.New("incorrect number of arguments")
 	}
+	return args[0], args[1], nil
+}
 
-	localPath, err := filepath.Abs(args[0])
+// setupLocalPath validates and sets up the local path.
+func setupLocalPath(path string) (string, os.FileInfo, error) {
+	localPath, err := filepath.Abs(path)
 	if err != nil {
-		log.Fatalf("FATAL: Invalid local path: %v", err)
+		return "", nil, fmt.Errorf("invalid local path: %w", err)
 	}
 
 	pathInfo, err := os.Stat(localPath)
 	if err != nil {
-		log.Fatalf("FATAL: Could not access path %s: %v", localPath, err)
+		return "", nil, fmt.Errorf("could not access path %s: %w", localPath, err)
 	}
 
-	s3Path := args[1]
+	return localPath, pathInfo, nil
+}
 
+// createApp creates a new App instance with the given configuration.
+func createApp(ctx context.Context, config *AppConfig, localPath string, isDir bool) (*App, error) {
+	s3Client, err := newS3Client(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create S3 client: %w", err)
+	}
+
+	return &App{
+		uploader:     s3Client,
+		localPath:    localPath,
+		isDir:        isDir,
+		bucket:       config.Bucket,
+		keyPrefix:    config.KeyPrefix,
+		delete:       config.Delete,
+		storageClass: config.StorageClass,
+	}, nil
+}
+
+// main is the entry point of the application.
+func main() {
+	// Parse flags
+	showVersion, config, args, err := parseFlags()
+	if err != nil {
+		log.Fatalf("FATAL: Failed to parse flags: %v", err)
+	}
+
+	if showVersion {
+		fmt.Printf("echos3 version %s\n", Version)
+		os.Exit(0)
+	}
+
+	// Validate arguments
+	localPathArg, s3Path, err := validateArgs(args)
+	if err != nil {
+		log.Fatal("Usage: echos3 /path/to/watch s3://bucket/key [--delete] [--storage-class STORAGE_CLASS]")
+	}
+
+	// Setup local path
+	localPath, pathInfo, err := setupLocalPath(localPathArg)
+	if err != nil {
+		log.Fatalf("FATAL: %v", err)
+	}
+
+	// Parse S3 path
 	bucket, keyPrefix, err := parseS3Path(s3Path)
 	if err != nil {
 		log.Fatalf("FATAL: Invalid S3 path: %v", err)
 	}
-
-	// Create the S3 client
-	ctx := context.Background()
-	s3Client, err := newS3Client(ctx)
-	if err != nil {
-		log.Fatalf("FATAL: Failed to create S3 client: %v", err)
-	}
+	config.Bucket = bucket
+	config.KeyPrefix = keyPrefix
+	config.LocalPath = localPath
 
 	// Create and run the application
-	app := &App{
-		uploader:     s3Client,
-		localPath:    localPath,
-		isDir:        pathInfo.IsDir(),
-		bucket:       bucket,
-		keyPrefix:    keyPrefix,
-		delete:       *deleteFlag,
-		storageClass: types.StorageClass(*storageClassFlag),
+	ctx := context.Background()
+	app, err := createApp(ctx, config, localPath, pathInfo.IsDir())
+	if err != nil {
+		log.Fatalf("FATAL: %v", err)
 	}
 
 	if err := app.run(ctx); err != nil {
