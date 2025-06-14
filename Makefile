@@ -29,8 +29,12 @@ endif
 # Default target executed when you just run `make`
 all: build
 
+# Install the build dependencies
+bootstrap:
+	go mod tidy
+
 # Build the Go application, injecting the version information
-build:
+build: bootstrap
 	@echo "Building $(BINARY_NAME) version $(VERSION)..."
 	@go build $(LDFLAGS) -o $(BINARY_NAME) main.go
 	@echo "$(BINARY_NAME) built successfully."
