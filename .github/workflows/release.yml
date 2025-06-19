@@ -75,5 +75,8 @@ jobs:
           formula-path: echos3.rb
           # The tap repository in the format 'owner/repo'
           homebrew-tap: jpwhite3/homebrew-echos3
+          # Specify the base branch of your tap repository
+          base-branch: main
+          create-branch: true
           # The commit message for the tap repository
           commit-message: 'chore: update echos3 formula to latest version'
