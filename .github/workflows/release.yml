@@ -28,38 +28,12 @@ jobs:
           go-version: '1.24'
 
       - name: Generate Changelog
-        uses: orhun/git-cliff-action@v3
-        id: git-cliff
-        with:
-          config: |
-            [changelog]
-            header = "# Changelog\n\n"
-            body = """
-            {% for group, commits in commits | group_by(attribute="group") %}
-                ### {{ group | upper_first }}
-                {% for commit in commits %}
-                    - {% if commit.scope %}(**{{ commit.scope }}**) {% endif %}{{ commit.message | upper_first }} ({{ commit.id | truncate(length=7, end="") }})
-                {% endfor %}
-            {% endfor %}
-            """
-            footer = ""
-            trim = true
-            [git]
-            conventional_commits = true
-            filter_unconventional = true
-            commit_parsers = [
-              { message = "^feat", group = "Features" },
-              { message = "^fix", group = "Bug Fixes" },
-              { message = "^docs", group = "Documentation" },
-              { message = "^style", group = "Styling" },
-              { message = "^refactor", group = "Refactoring" },
-              { message = "^test", group = "Testing" },
-              { message = "^chore", group = "Chores" },
-              { message = "^revert", group = "Reverts" },
-            ]
-        env:
-          # This will generate a changelog for the latest tag
-          OUTPUT: CHANGELOG.md
+        id: changelog
+        run: |
+          echo "# Release Notes for v${{ steps.version.outputs.version }}" > RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "## Changes since last release:" >> RELEASE_NOTES.md
+          git log $(git describe --tags --abbrev=0 2>/dev/null || echo HEAD~10)..HEAD --pretty=format:"- %s" | grep -v "Merge" >> RELEASE_NOTES.md
 
       - name: Get next version
         id: version
@@ -81,7 +55,7 @@ jobs:
         with:
           tag_name: 'v${{ steps.version.outputs.version }}'
           name: 'Release v${{ steps.version.outputs.version }}'
-          body_path: 'CHANGELOG.md'
+          body_path: 'RELEASE_NOTES.md'
           files: |
             echos3-darwin-amd64
             echos3-darwin-arm64
@@ -90,13 +64,15 @@ jobs:
 
       - name: Update Homebrew Tap
         uses: mislav/bump-homebrew-formula-action@v3
+        env:
+          # The GitHub token is provided as an environment variable
+          COMMITTER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # The GitHub token is NOT a personal access token.
-          # It's a special token granted to the workflow.
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # The name of the formula
+          formula-name: echos3
           # The path to your formula file in the tap repository
-          formula_path: 'echos3.rb'
+          formula-path: echos3.rb
           # The tap repository in the format 'owner/repo'
-          tap_repository: 'jpwhite3/homebrew-echos3'
+          homebrew-tap: jpwhite3/homebrew-echos3
           # The commit message for the tap repository
-          commit_message: 'chore: update echos3 formula to v{{version}}'
+          commit-message: 'chore: update echos3 formula to v{{version}}'
