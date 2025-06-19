@@ -64,19 +64,99 @@ jobs:
             echos3-windows-amd64.exe
 
       - name: Update Homebrew Tap
-        uses: mislav/bump-homebrew-formula-action@v3
+        id: update_tap
+        if: success() && steps.create_release.outcome == 'success'
         env:
-          # The GitHub token is provided as an environment variable
-          COMMITTER_TOKEN: ${{ secrets.COMMITTER_TOKEN }}
-        with:
-          # The name of the formula
-          formula-name: echos3
-          # The path to your formula file in the tap repository
-          formula-path: echos3.rb
-          # The tap repository in the format 'owner/repo'
-          homebrew-tap: jpwhite3/homebrew-echos3
-          # Specify the base branch of your tap repository
-          base-branch: main
-          create-branch: true
-          # The commit message for the tap repository
-          commit-message: 'chore: update echos3 formula to latest version'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Updating Homebrew tap with new version v${{ steps.version.outputs.version }}"
+          
+          # Create a temporary directory for our work
+          TEMP_DIR=$(mktemp -d)
+          echo "Working in temporary directory: $TEMP_DIR"
+          
+          # Set Git global configs for the commit
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          
+          # Clone the tap repository
+          echo "Cloning Homebrew tap repository..."
+          if ! git clone https://x-access-token:${GITHUB_TOKEN}@github.com/jpwhite3/homebrew-echos3.git "$TEMP_DIR/homebrew-echos3"; then
+            echo "::error::Failed to clone the Homebrew tap repository"
+            exit 1
+          fi
+          
+          cd "$TEMP_DIR/homebrew-echos3"
+          
+          # Calculate SHA256 checksums for the released binaries
+          echo "Downloading release assets to calculate checksums..."
+          mkdir -p tmp
+          
+          echo "Downloading AMD64 binary..."
+          if ! curl -L -o tmp/echos3-darwin-amd64 https://github.com/jpwhite3/echos3/releases/download/v${{ steps.version.outputs.version }}/echos3-darwin-amd64; then
+            echo "::error::Failed to download AMD64 binary"
+            exit 1
+          fi
+          
+          echo "Downloading ARM64 binary..."
+          if ! curl -L -o tmp/echos3-darwin-arm64 https://github.com/jpwhite3/echos3/releases/download/v${{ steps.version.outputs.version }}/echos3-darwin-arm64; then
+            echo "::error::Failed to download ARM64 binary"
+            exit 1
+          fi
+          
+          # Calculate checksums
+          SHA_AMD64=$(shasum -a 256 tmp/echos3-darwin-amd64 | cut -d ' ' -f 1)
+          SHA_ARM64=$(shasum -a 256 tmp/echos3-darwin-arm64 | cut -d ' ' -f 1)
+          
+          # Verify checksums are not empty
+          if [ -z "$SHA_AMD64" ] || [ -z "$SHA_ARM64" ]; then
+            echo "::error::Failed to calculate SHA256 checksums"
+            exit 1
+          fi
+          
+          echo "AMD64 SHA: $SHA_AMD64"
+          echo "ARM64 SHA: $SHA_ARM64"
+          
+          # Update the formula file
+          echo "Generating updated formula..."
+          cat > echos3.rb << EOF
+          class Echos3 < Formula
+            desc "Watch local files and sync changes to S3 in real-time"
+            homepage "https://github.com/jpwhite3/echos3"
+            version "${{ steps.version.outputs.version }}"
+            
+            on_macos do
+              if Hardware::CPU.intel?
+                url "https://github.com/jpwhite3/echos3/releases/download/v${{ steps.version.outputs.version }}/echos3-darwin-amd64"
+                sha256 "$SHA_AMD64"
+              else
+                url "https://github.com/jpwhite3/echos3/releases/download/v${{ steps.version.outputs.version }}/echos3-darwin-arm64"
+                sha256 "$SHA_ARM64"
+              end
+            end
+            
+            def install
+              bin.install stable.url.split("/").last => "echos3"
+            end
+            
+            test do
+              assert_match "echos3 version", shell_output("#{bin}/echos3 --version")
+            end
+          end
+          EOF
+          
+          # Commit and push the changes
+          echo "Committing and pushing changes..."
+          git add echos3.rb
+          git commit -m "chore: update echos3 formula to v${{ steps.version.outputs.version }}"
+          
+          if ! git push origin main; then
+            echo "::error::Failed to push changes to the Homebrew tap repository"
+            exit 1
+          fi
+          
+          # Clean up
+          echo "Cleaning up temporary files..."
+          rm -rf "$TEMP_DIR"
+          
+          echo "Homebrew tap updated successfully!"
