@@ -67,7 +67,7 @@ jobs:
         id: update_tap
         if: success() && steps.create_release.outcome == 'success'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.COMMIT_TOKEN }}
         run: |
           echo "Updating Homebrew tap with new version v${{ steps.version.outputs.version }}"
           
