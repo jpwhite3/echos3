@@ -29,6 +29,7 @@ jobs:
 
       - name: Generate Changelog
         id: changelog
+        continue-on-error: true
         run: |
           echo "# Release Notes for v${{ steps.version.outputs.version }}" > RELEASE_NOTES.md
           echo "" >> RELEASE_NOTES.md
