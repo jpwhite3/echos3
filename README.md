@@ -7,6 +7,8 @@ EchoS3 is a simple, efficient command-line tool written in Go that watches a loc
 
 - **S3 Integration**: Seamlessly uploads changed files to your specified S3 bucket and key prefix.
 
+- **Concurrent Uploads**: Improves performance by uploading multiple files simultaneously using Go goroutines.
+
 - **Optional Deletion**: Sync local deletions to S3 with the --delete flag.
 
 - **Configurable Storage Class**: Defaults to S3 Intelligent-Tiering, but allows you to specify any other storage class (e.g., STANDARD, GLACIER).
@@ -73,7 +75,13 @@ Examples
 
     `echos3 ./important-docs s3://my-archive/docs --storage-class STANDARD_IA`
 
-4. Get the current version:
+4. Set maximum concurrent uploads:
+
+    Limit the number of concurrent uploads to 8 (useful for large directories or to control bandwidth usage).
+
+    `echos3 ./large-dataset s3://my-bucket/dataset --concurrency 8`
+
+5. Get the current version:
 
     `echos3 --version`
 

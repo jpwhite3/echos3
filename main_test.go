@@ -91,14 +91,19 @@ func newTestApp(t *testing.T, deleteFlag bool, isDir bool) (*App, *MockS3Uploade
 	mockUploader := newMockS3Uploader()
 
 	app := &App{
-		uploader:     mockUploader,
-		localPath:    tmpDir, // Default to dir, can be overridden by caller
-		isDir:        isDir,
-		bucket:       "test-bucket",
-		keyPrefix:    "test-prefix",
-		delete:       deleteFlag,
-		storageClass: types.StorageClassStandard,
+		uploader:      mockUploader,
+		localPath:     tmpDir, // Default to dir, can be overridden by caller
+		isDir:         isDir,
+		bucket:        "test-bucket",
+		keyPrefix:     "test-prefix",
+		delete:        deleteFlag,
+		storageClass:  types.StorageClassStandard,
+		maxConcurrent: 2, // Use a small value for testing
 	}
+	
+	// Initialize the worker pool for testing
+	app.workerPool = NewUploadWorkerPool(mockUploader, "test-bucket", types.StorageClassStandard, 2)
+	
 	return app, mockUploader, tmpDir
 }
 
@@ -152,6 +157,9 @@ func TestApp_handleEvent(t *testing.T) {
 
 			event := fsnotify.Event{Name: testFile, Op: fsnotify.Create}
 			app.handleEvent(context.Background(), event, watcher)
+			
+			// Wait for worker pool to process the upload
+			app.workerPool.Shutdown()
 
 			expectedKey := "test-prefix/newfile.txt"
 			assert.Contains(t, mockUploader.Uploads, expectedKey)
@@ -179,6 +187,9 @@ func TestApp_handleEvent(t *testing.T) {
 
 			event := fsnotify.Event{Name: watchedFile, Op: fsnotify.Write}
 			app.handleEvent(context.Background(), event, watcher)
+			
+			// Wait for worker pool to process the upload
+			app.workerPool.Shutdown()
 
 			expectedKey := "test-prefix" // For single file, key is the prefix
 			assert.Contains(t, mockUploader.Uploads, expectedKey)
@@ -193,6 +204,9 @@ func TestApp_handleEvent(t *testing.T) {
 
 			event := fsnotify.Event{Name: otherFile, Op: fsnotify.Write}
 			app.handleEvent(context.Background(), event, watcher)
+			
+			// Wait for worker pool to process any potential uploads
+			app.workerPool.Shutdown()
 
 			assert.Empty(t, mockUploader.Uploads, "Should not upload for an unwatched file")
 		})
@@ -216,8 +230,12 @@ func TestApp_handleUpload_Errors(t *testing.T) {
 		app, mockUploader, tmpDir := newTestApp(t, false, true)
 		nonExistentFile := filepath.Join(tmpDir, "ghost.txt")
 
+		// Queue the upload
 		app.handleUpload(context.Background(), nonExistentFile, "test-prefix/ghost.txt")
-
+		
+		// Wait for worker pool to process the job
+		app.workerPool.Shutdown()
+		
 		assert.Empty(t, mockUploader.Uploads, "Upload should not be attempted if file doesn't exist")
 	})
 
@@ -227,8 +245,12 @@ func TestApp_handleUpload_Errors(t *testing.T) {
 		testFile := filepath.Join(tmpDir, "upload-fail.txt")
 		require.NoError(t, os.WriteFile(testFile, []byte("content"), 0644))
 
+		// Queue the upload
 		app.handleUpload(context.Background(), testFile, "test-prefix/upload-fail.txt")
-
+		
+		// Wait for worker pool to process the job
+		app.workerPool.Shutdown()
+		
 		assert.Empty(t, mockUploader.Uploads)
 	})
 }

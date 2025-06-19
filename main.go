@@ -8,7 +8,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -55,24 +57,135 @@ var newS3Client S3ClientCreator = func(ctx context.Context) (*S3Client, error) {
 	return &S3Client{client: s3.NewFromConfig(cfg)}, nil
 }
 
+// UploadJob represents a file upload task
+type UploadJob struct {
+	localFile string
+	s3Key     string
+}
+
+// UploadWorkerPool manages a pool of workers for concurrent uploads
+type UploadWorkerPool struct {
+	uploader     S3Uploader
+	bucket       string
+	storageClass types.StorageClass
+	jobQueue     chan UploadJob
+	wg           sync.WaitGroup
+}
+
+// NewUploadWorkerPool creates a new worker pool for concurrent uploads
+func NewUploadWorkerPool(uploader S3Uploader, bucket string, storageClass types.StorageClass, maxWorkers int) *UploadWorkerPool {
+	pool := &UploadWorkerPool{
+		uploader:     uploader,
+		bucket:       bucket,
+		storageClass: storageClass,
+		jobQueue:     make(chan UploadJob, maxWorkers*2), // Buffer size is 2x the number of workers
+	}
+
+	// Start the worker goroutines
+	pool.wg.Add(maxWorkers)
+	for i := 0; i < maxWorkers; i++ {
+		go pool.worker()
+	}
+
+	return pool
+}
+
+// worker processes upload jobs from the queue
+func (p *UploadWorkerPool) worker() {
+	defer p.wg.Done()
+
+	for job := range p.jobQueue {
+		// Process the upload job
+		p.processUpload(context.Background(), job.localFile, job.s3Key)
+	}
+}
+
+// processUpload handles the actual upload of a file to S3
+func (p *UploadWorkerPool) processUpload(ctx context.Context, localFile, s3Key string) {
+	file, err := os.Open(localFile)
+	if err != nil {
+		log.Printf("ERROR: Could not open file for upload %s: %v", localFile, err)
+		return
+	}
+	defer func() {
+		if err := file.Close(); err != nil {
+			log.Printf("ERROR: Could not close file %s: %v", localFile, err)
+		}
+	}()
+
+	s3URI := fmt.Sprintf("s3://%s/%s", p.bucket, s3Key)
+	log.Printf("UPLOAD: %s -> %s", filepath.Base(localFile), s3URI)
+
+	input := &s3.PutObjectInput{
+		Bucket:       aws.String(p.bucket),
+		Key:          aws.String(s3Key),
+		Body:         file,
+		StorageClass: p.storageClass,
+	}
+
+	_, err = p.uploader.Upload(ctx, input)
+	if err != nil {
+		log.Printf("ERROR: Failed to upload %s: %v", localFile, err)
+	}
+}
+
+// QueueUpload adds a new upload job to the queue
+func (p *UploadWorkerPool) QueueUpload(localFile, s3Key string) {
+	p.jobQueue <- UploadJob{
+		localFile: localFile,
+		s3Key:     s3Key,
+	}
+}
+
+// Shutdown gracefully shuts down the worker pool
+func (p *UploadWorkerPool) Shutdown() {
+	close(p.jobQueue)
+	p.wg.Wait()
+}
+
 // App holds the application's configuration and dependencies.
 type App struct {
-	uploader     S3Uploader
-	localPath    string
-	isDir        bool // True if localPath is a directory
-	bucket       string
-	keyPrefix    string
-	delete       bool
-	storageClass types.StorageClass
+	uploader      S3Uploader
+	localPath     string
+	isDir         bool // True if localPath is a directory
+	bucket        string
+	keyPrefix     string
+	delete        bool
+	storageClass  types.StorageClass
+	workerPool    *UploadWorkerPool
+	maxConcurrent int
 }
 
 // AppConfig holds the configuration for the application.
 type AppConfig struct {
-	LocalPath    string
-	Bucket       string
-	KeyPrefix    string
-	Delete       bool
-	StorageClass types.StorageClass
+	LocalPath     string
+	Bucket        string
+	KeyPrefix     string
+	Delete        bool
+	StorageClass  types.StorageClass
+	MaxConcurrent int
+}
+
+// getDefaultConcurrency returns a reasonable default concurrency limit
+// based on the available system resources
+func getDefaultConcurrency() int {
+	// Use number of CPUs as a baseline
+	numCPU := runtime.NumCPU()
+	
+	// For systems with many cores, we don't want to create too many workers
+	// as network and disk I/O will become the bottleneck
+	switch {
+	case numCPU <= 2:
+		return 2 // Minimum of 2 workers
+	case numCPU <= 4:
+		return numCPU
+	case numCPU <= 8:
+		return numCPU - 1
+	case numCPU <= 16:
+		return numCPU - 2
+	default:
+		return numCPU / 2 // For very high core counts, use half the cores
+	}
 }
 
 // parseFlags parses command-line flags and returns the configuration.
@@ -80,11 +193,13 @@ func parseFlags() (showVersion bool, config *AppConfig, args []string, err error
 	deleteFlag := flag.Bool("delete", false, "Delete files in S3 when they are deleted locally.")
 	storageClassFlag := flag.String("storage-class", string(types.StorageClassIntelligentTiering), "Specify the S3 storage class (e.g., STANDARD, GLACIER).")
 	versionFlag := flag.Bool("version", false, "Print the echos3 version and exit.")
+	concurrencyFlag := flag.Int("concurrency", getDefaultConcurrency(), "Maximum number of concurrent uploads.")
 	flag.Parse()
 
 	config = &AppConfig{
-		Delete:       *deleteFlag,
-		StorageClass: types.StorageClass(*storageClassFlag),
+		Delete:        *deleteFlag,
+		StorageClass:  types.StorageClass(*storageClassFlag),
+		MaxConcurrent: *concurrencyFlag,
 	}
 
 	return *versionFlag, config, flag.Args(), nil
@@ -120,15 +235,21 @@ func createApp(ctx context.Context, config *AppConfig, localPath string, isDir b
 		return nil, fmt.Errorf("failed to create S3 client: %w", err)
 	}
 
-	return &App{
-		uploader:     s3Client,
-		localPath:    localPath,
-		isDir:        isDir,
-		bucket:       config.Bucket,
-		keyPrefix:    config.KeyPrefix,
-		delete:       config.Delete,
-		storageClass: config.StorageClass,
-	}, nil
+	app := &App{
+		uploader:      s3Client,
+		localPath:     localPath,
+		isDir:         isDir,
+		bucket:        config.Bucket,
+		keyPrefix:     config.KeyPrefix,
+		delete:        config.Delete,
+		storageClass:  config.StorageClass,
+		maxConcurrent: config.MaxConcurrent,
+	}
+
+	// Create the worker pool for concurrent uploads
+	app.workerPool = NewUploadWorkerPool(s3Client, config.Bucket, config.StorageClass, config.MaxConcurrent)
+
+	return app, nil
 }
 
 // main is the entry point of the application.
@@ -187,6 +308,8 @@ func (a *App) run(ctx context.Context) error {
 		if err := watcher.Close(); err != nil {
 			log.Printf("ERROR: Could not close watcher: %v", err)
 		}
+		// Shutdown the worker pool when done
+		a.workerPool.Shutdown()
 	}()
 
 	if a.isDir {
@@ -287,33 +410,10 @@ func (a *App) handleEvent(ctx context.Context, event fsnotify.Event, watcher *fs
 	}
 }
 
-// handleUpload uploads a single file to S3.
+// handleUpload queues a file for upload to S3 using the worker pool.
 func (a *App) handleUpload(ctx context.Context, localFile, s3Key string) {
-	file, err := os.Open(localFile)
-	if err != nil {
-		log.Printf("ERROR: Could not open file for upload %s: %v", localFile, err)
-		return
-	}
-	defer func() {
-		if err := file.Close(); err != nil {
-			log.Printf("ERROR: Could not close file %s: %v", localFile, err)
-		}
-	}()
-
-	s3URI := fmt.Sprintf("s3://%s/%s", a.bucket, s3Key)
-	log.Printf("UPLOAD: %s -> %s", filepath.Base(localFile), s3URI)
-
-	input := &s3.PutObjectInput{
-		Bucket:       aws.String(a.bucket),
-		Key:          aws.String(s3Key),
-		Body:         file,
-		StorageClass: a.storageClass,
-	}
-
-	_, err = a.uploader.Upload(ctx, input)
-	if err != nil {
-		log.Printf("ERROR: Failed to upload %s: %v", localFile, err)
-	}
+	// Queue the upload job to be processed by the worker pool
+	a.workerPool.QueueUpload(localFile, s3Key)
 }
 
 // handleRemove deletes a single object from S3 if the --delete flag is set.
