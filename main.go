@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"mime"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -116,11 +117,18 @@ func (p *UploadWorkerPool) processUpload(ctx context.Context, localFile, s3Key s
 	s3URI := fmt.Sprintf("s3://%s/%s", p.bucket, s3Key)
 	log.Printf("UPLOAD: %s -> %s", filepath.Base(localFile), s3URI)
 
+	// Determine content type
+	contentType := mime.TypeByExtension(filepath.Ext(localFile))
+
 	input := &s3.PutObjectInput{
 		Bucket:       aws.String(p.bucket),
 		Key:          aws.String(s3Key),
 		Body:         file,
 		StorageClass: p.storageClass,
+	}
+	if contentType != "" {
+		input.ContentType = aws.String(contentType)
+		log.Printf("INFO: Detected Content-Type: %s for %s", contentType, filepath.Base(localFile))
 	}
 
 	_, err = p.uploader.Upload(ctx, input)

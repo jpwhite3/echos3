@@ -157,12 +157,50 @@ func TestApp_handleEvent(t *testing.T) {
 
 			event := fsnotify.Event{Name: testFile, Op: fsnotify.Create}
 			app.handleEvent(context.Background(), event, watcher)
-			
+
 			// Wait for worker pool to process the upload
 			app.workerPool.Shutdown()
 
 			expectedKey := "test-prefix/newfile.txt"
-			assert.Contains(t, mockUploader.Uploads, expectedKey)
+			require.Contains(t, mockUploader.Uploads, expectedKey)
+			uploadedInput := mockUploader.Uploads[expectedKey]
+			assert.NotNil(t, uploadedInput.ContentType)
+			assert.Equal(t, "text/plain; charset=utf-8", *uploadedInput.ContentType)
+		})
+
+		t.Run("Create file with no extension should have no content type", func(t *testing.T) {
+			app, mockUploader, tmpDir := newTestApp(t, false, true) // isDir = true
+			testFile := filepath.Join(tmpDir, "newfilewithoutextension")
+			require.NoError(t, os.WriteFile(testFile, []byte("content"), 0644))
+
+			event := fsnotify.Event{Name: testFile, Op: fsnotify.Create}
+			app.handleEvent(context.Background(), event, watcher)
+
+			// Wait for worker pool to process the upload
+			app.workerPool.Shutdown()
+
+			expectedKey := "test-prefix/newfilewithoutextension"
+			require.Contains(t, mockUploader.Uploads, expectedKey)
+			uploadedInput := mockUploader.Uploads[expectedKey]
+			assert.Nil(t, uploadedInput.ContentType)
+		})
+
+		t.Run("Create common image file type should trigger upload with correct content type", func(t *testing.T) {
+			app, mockUploader, tmpDir := newTestApp(t, false, true) // isDir = true
+			testFile := filepath.Join(tmpDir, "image.jpg")
+			require.NoError(t, os.WriteFile(testFile, []byte("image data"), 0644))
+
+			event := fsnotify.Event{Name: testFile, Op: fsnotify.Create}
+			app.handleEvent(context.Background(), event, watcher)
+
+			// Wait for worker pool to process the upload
+			app.workerPool.Shutdown()
+
+			expectedKey := "test-prefix/image.jpg"
+			require.Contains(t, mockUploader.Uploads, expectedKey)
+			uploadedInput := mockUploader.Uploads[expectedKey]
+			assert.NotNil(t, uploadedInput.ContentType)
+			assert.Equal(t, "image/jpeg", *uploadedInput.ContentType)
 		})
 
 		t.Run("Remove file should trigger delete if flag is set", func(t *testing.T) {
@@ -187,12 +225,15 @@ func TestApp_handleEvent(t *testing.T) {
 
 			event := fsnotify.Event{Name: watchedFile, Op: fsnotify.Write}
 			app.handleEvent(context.Background(), event, watcher)
-			
+
 			// Wait for worker pool to process the upload
 			app.workerPool.Shutdown()
 
 			expectedKey := "test-prefix" // For single file, key is the prefix
-			assert.Contains(t, mockUploader.Uploads, expectedKey)
+			require.Contains(t, mockUploader.Uploads, expectedKey)
+			uploadedInput := mockUploader.Uploads[expectedKey]
+			assert.NotNil(t, uploadedInput.ContentType)
+			assert.Equal(t, "text/plain; charset=utf-8", *uploadedInput.ContentType)
 		})
 
 		t.Run("Event on other file should be ignored", func(t *testing.T) {
