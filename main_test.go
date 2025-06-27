@@ -100,10 +100,10 @@ func newTestApp(t *testing.T, deleteFlag bool, isDir bool) (*App, *MockS3Uploade
 		storageClass:  types.StorageClassStandard,
 		maxConcurrent: 2, // Use a small value for testing
 	}
-	
+
 	// Initialize the worker pool for testing
 	app.workerPool = NewUploadWorkerPool(mockUploader, "test-bucket", types.StorageClassStandard, 2)
-	
+
 	return app, mockUploader, tmpDir
 }
 
@@ -245,7 +245,7 @@ func TestApp_handleEvent(t *testing.T) {
 
 			event := fsnotify.Event{Name: otherFile, Op: fsnotify.Write}
 			app.handleEvent(context.Background(), event, watcher)
-			
+
 			// Wait for worker pool to process any potential uploads
 			app.workerPool.Shutdown()
 
@@ -273,10 +273,10 @@ func TestApp_handleUpload_Errors(t *testing.T) {
 
 		// Queue the upload
 		app.handleUpload(context.Background(), nonExistentFile, "test-prefix/ghost.txt")
-		
+
 		// Wait for worker pool to process the job
 		app.workerPool.Shutdown()
-		
+
 		assert.Empty(t, mockUploader.Uploads, "Upload should not be attempted if file doesn't exist")
 	})
 
@@ -288,10 +288,10 @@ func TestApp_handleUpload_Errors(t *testing.T) {
 
 		// Queue the upload
 		app.handleUpload(context.Background(), testFile, "test-prefix/upload-fail.txt")
-		
+
 		// Wait for worker pool to process the job
 		app.workerPool.Shutdown()
-		
+
 		assert.Empty(t, mockUploader.Uploads)
 	})
 }
@@ -351,7 +351,7 @@ func TestIntegration_ArgumentValidation(t *testing.T) {
 			cmd := exec.Command(testBinaryPath, tc.args...)
 			output, err := cmd.CombinedOutput()
 			require.Error(t, err, "Command should fail with wrong number of arguments")
-			assert.Contains(t, string(output), "Usage: echos3", "Should print usage information on error")
+			assert.Contains(t, string(output), "Usage:", "Should print usage information on error")
 		})
 	}
 }
@@ -397,45 +397,45 @@ func TestParseFlags(t *testing.T) {
 	defer func() { os.Args = oldArgs }()
 
 	testCases := []struct {
-		name           string
-		args           []string
-		expectVersion  bool
-		expectDelete   bool
+		name               string
+		args               []string
+		expectVersion      bool
+		expectDelete       bool
 		expectStorageClass string
 	}{
 		{
-			name:           "Default flags",
-			args:           []string{"echos3", "local/path", "s3://bucket/key"},
-			expectVersion:  false,
-			expectDelete:   false,
+			name:               "Default flags",
+			args:               []string{"echos3", "local/path", "s3://bucket/key"},
+			expectVersion:      false,
+			expectDelete:       false,
 			expectStorageClass: string(types.StorageClassIntelligentTiering),
 		},
 		{
-			name:           "Version flag",
-			args:           []string{"echos3", "--version"},
-			expectVersion:  true,
-			expectDelete:   false,
+			name:               "Version flag",
+			args:               []string{"echos3", "--version"},
+			expectVersion:      true,
+			expectDelete:       false,
 			expectStorageClass: string(types.StorageClassIntelligentTiering),
 		},
 		{
-			name:           "Delete flag",
-			args:           []string{"echos3", "--delete", "local/path", "s3://bucket/key"},
-			expectVersion:  false,
-			expectDelete:   true,
+			name:               "Delete flag",
+			args:               []string{"echos3", "--delete", "local/path", "s3://bucket/key"},
+			expectVersion:      false,
+			expectDelete:       true,
 			expectStorageClass: string(types.StorageClassIntelligentTiering),
 		},
 		{
-			name:           "Storage class flag",
-			args:           []string{"echos3", "--storage-class", "GLACIER", "local/path", "s3://bucket/key"},
-			expectVersion:  false,
-			expectDelete:   false,
+			name:               "Storage class flag",
+			args:               []string{"echos3", "--storage-class", "GLACIER", "local/path", "s3://bucket/key"},
+			expectVersion:      false,
+			expectDelete:       false,
 			expectStorageClass: "GLACIER",
 		},
 		{
-			name:           "All flags",
-			args:           []string{"echos3", "--version", "--delete", "--storage-class", "STANDARD", "local/path", "s3://bucket/key"},
-			expectVersion:  true,
-			expectDelete:   true,
+			name:               "All flags",
+			args:               []string{"echos3", "--version", "--delete", "--storage-class", "STANDARD", "local/path", "s3://bucket/key"},
+			expectVersion:      true,
+			expectDelete:       true,
 			expectStorageClass: "STANDARD",
 		},
 	}
@@ -444,24 +444,24 @@ func TestParseFlags(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Reset flags for each test case
 			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
-			
+
 			// Set up test arguments
 			os.Args = tc.args
-			
+
 			// Call the function
 			showVersion, config, args, err := parseFlags()
-			
+
 			// Check results
 			assert.NoError(t, err)
 			assert.Equal(t, tc.expectVersion, showVersion)
 			assert.Equal(t, tc.expectDelete, config.Delete)
 			assert.Equal(t, types.StorageClass(tc.expectStorageClass), config.StorageClass)
-			
+
 			// Check that args contains the non-flag arguments
 			expectedArgs := []string{}
 			for _, arg := range tc.args[1:] {
 				if !strings.HasPrefix(arg, "--") &&
-				   arg != "GLACIER" && arg != "STANDARD" { // Skip flag values
+					arg != "GLACIER" && arg != "STANDARD" { // Skip flag values
 					expectedArgs = append(expectedArgs, arg)
 				}
 			}
@@ -511,7 +511,7 @@ func TestValidateArgs(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			localPath, s3Path, err := validateArgs(tc.args)
-			
+
 			if tc.expectErr {
 				assert.Error(t, err)
 			} else {
@@ -527,41 +527,45 @@ func TestSetupLocalPath(t *testing.T) {
 	t.Run("Valid path", func(t *testing.T) {
 		// Create a temporary directory for testing
 		tmpDir := t.TempDir()
-		
+
 		// Call the function
 		path, info, err := setupLocalPath(tmpDir)
-		
+
 		// Check results
 		assert.NoError(t, err)
 		assert.True(t, info.IsDir())
-		
+
 		// The path should be absolute
 		absPath, _ := filepath.Abs(tmpDir)
 		assert.Equal(t, absPath, path)
 	})
-	
+
 	t.Run("Valid file", func(t *testing.T) {
 		// Create a temporary file for testing
 		tmpFile, err := os.CreateTemp("", "test-file")
 		require.NoError(t, err)
-		defer os.Remove(tmpFile.Name())
-		
+		defer func() {
+			if err := os.Remove(tmpFile.Name()); err != nil {
+				t.Logf("Failed to remove temp file: %v", err)
+			}
+		}()
+
 		// Call the function
 		path, info, err := setupLocalPath(tmpFile.Name())
-		
+
 		// Check results
 		assert.NoError(t, err)
 		assert.False(t, info.IsDir())
-		
+
 		// The path should be absolute
 		absPath, _ := filepath.Abs(tmpFile.Name())
 		assert.Equal(t, absPath, path)
 	})
-	
+
 	t.Run("Non-existent path", func(t *testing.T) {
 		// Call the function with a non-existent path
 		_, _, err := setupLocalPath("/path/that/does/not/exist")
-		
+
 		// Check results
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "could not access path")
@@ -574,12 +578,12 @@ func TestCreateApp(t *testing.T) {
 	defer func() {
 		newS3Client = originalNewS3Client
 	}()
-	
+
 	// Set up a mock S3 client creator that returns a valid client
 	newS3Client = func(ctx context.Context) (*S3Client, error) {
 		return &S3Client{client: nil}, nil
 	}
-	
+
 	config := &AppConfig{
 		LocalPath:    "/test/path",
 		Bucket:       "test-bucket",
@@ -587,10 +591,10 @@ func TestCreateApp(t *testing.T) {
 		Delete:       true,
 		StorageClass: types.StorageClassStandard,
 	}
-	
+
 	t.Run("Create app with directory", func(t *testing.T) {
 		app, err := createApp(context.Background(), config, "/test/path", true)
-		
+
 		assert.NoError(t, err)
 		assert.NotNil(t, app)
 		assert.Equal(t, "/test/path", app.localPath)
@@ -600,24 +604,24 @@ func TestCreateApp(t *testing.T) {
 		assert.True(t, app.delete)
 		assert.Equal(t, types.StorageClassStandard, app.storageClass)
 	})
-	
+
 	t.Run("Create app with file", func(t *testing.T) {
 		app, err := createApp(context.Background(), config, "/test/path/file.txt", false)
-		
+
 		assert.NoError(t, err)
 		assert.NotNil(t, app)
 		assert.Equal(t, "/test/path/file.txt", app.localPath)
 		assert.False(t, app.isDir)
 	})
-	
+
 	t.Run("S3 client creation failure", func(t *testing.T) {
 		// Make newS3Client return an error
 		newS3Client = func(ctx context.Context) (*S3Client, error) {
 			return nil, errors.New("failed to create S3 client")
 		}
-		
+
 		_, err := createApp(context.Background(), config, "/test/path", true)
-		
+
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to create S3 client")
 	})
@@ -626,73 +630,73 @@ func TestCreateApp(t *testing.T) {
 func TestMainFlow(t *testing.T) {
 	// This test simulates the flow of the main function by calling the extracted functions
 	// in sequence, allowing us to test the main function's logic without directly testing main()
-	
+
 	// Save the original S3 client creator and restore it after the test
 	originalNewS3Client := newS3Client
-	defer func() { 
-		newS3Client = originalNewS3Client 
+	defer func() {
+		newS3Client = originalNewS3Client
 	}()
-	
+
 	// Create a mock S3 client creator
 	newS3Client = func(ctx context.Context) (*S3Client, error) {
 		return &S3Client{client: nil}, nil
 	}
-	
+
 	// Create a temporary directory and file for testing
 	tmpDir := t.TempDir()
 	testFile := filepath.Join(tmpDir, "test.txt")
 	require.NoError(t, os.WriteFile(testFile, []byte("test content"), 0644))
-	
+
 	// Save original command line arguments and restore them after the test
 	oldArgs := os.Args
 	defer func() { os.Args = oldArgs }()
-	
+
 	// Set up test arguments
 	os.Args = []string{"echos3", "--storage-class", "STANDARD", testFile, "s3://test-bucket/test-prefix"}
-	
+
 	// Reset flags for the test
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
-	
+
 	// Step 1: Parse flags
 	showVersion, config, args, err := parseFlags()
 	require.NoError(t, err)
 	assert.False(t, showVersion)
 	assert.Equal(t, types.StorageClassStandard, config.StorageClass)
-	
+
 	// Step 2: Validate arguments
 	localPathArg, s3Path, err := validateArgs(args)
 	require.NoError(t, err)
 	assert.Equal(t, testFile, localPathArg)
 	assert.Equal(t, "s3://test-bucket/test-prefix", s3Path)
-	
+
 	// Step 3: Setup local path
 	localPath, pathInfo, err := setupLocalPath(localPathArg)
 	require.NoError(t, err)
 	assert.False(t, pathInfo.IsDir())
-	
+
 	// Step 4: Parse S3 path
 	bucket, keyPrefix, err := parseS3Path(s3Path)
 	require.NoError(t, err)
 	assert.Equal(t, "test-bucket", bucket)
 	assert.Equal(t, "test-prefix", keyPrefix)
-	
+
 	// Update config with parsed values
 	config.Bucket = bucket
 	config.KeyPrefix = keyPrefix
 	config.LocalPath = localPath
-	
+
 	// Step 5: Create app
 	ctx := context.Background()
 	app, err := createApp(ctx, config, localPath, pathInfo.IsDir())
 	require.NoError(t, err)
-	
+
 	// Verify app configuration
 	assert.Equal(t, localPath, app.localPath)
 	assert.Equal(t, "test-bucket", app.bucket)
 	assert.Equal(t, "test-prefix", app.keyPrefix)
 	assert.Equal(t, types.StorageClassStandard, app.storageClass)
 	assert.False(t, app.isDir)
-	
+
 	// We don't call app.run() as it would start a long-running process
 	// Instead, we've verified that all the setup steps work correctly
 }

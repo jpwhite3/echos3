@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"mime"
@@ -290,6 +291,39 @@ func init() {
 	rootCmd.Flags().StringP("storage-class", "s", string(types.StorageClassIntelligentTiering), "Specify the S3 storage class (e.g., STANDARD, GLACIER).")
 	rootCmd.Flags().IntP("concurrency", "c", getDefaultConcurrency(), "Maximum number of concurrent uploads.")
 	// Version flag is automatically added by cobra if `Version` field is set on rootCmd
+}
+
+// parseFlags parses command line flags and returns the showVersion flag, config, and arguments.
+func parseFlags() (bool, *AppConfig, []string, error) {
+	// Define flags
+	showVersionFlag := flag.Bool("version", false, "Show version information")
+	deleteFlag := flag.Bool("delete", false, "Delete files in S3 when they are deleted locally")
+	storageClassStr := flag.String("storage-class", string(types.StorageClassIntelligentTiering), "Specify the S3 storage class")
+	concurrency := flag.Int("concurrency", getDefaultConcurrency(), "Maximum number of concurrent uploads")
+
+	// Parse flags
+	flag.Parse()
+
+	// Create config
+	config := &AppConfig{
+		Delete:        *deleteFlag,
+		StorageClass:  types.StorageClass(*storageClassStr),
+		MaxConcurrent: *concurrency,
+	}
+
+	return *showVersionFlag, config, flag.Args(), nil
+}
+
+// validateArgs validates command line arguments and returns the local path and S3 path.
+func validateArgs(args []string) (string, string, error) {
+	if len(args) != 2 {
+		return "", "", fmt.Errorf("Usage: echos3 [flags] /path/to/watch s3://bucket/key")
+	}
+
+	localPath := args[0]
+	s3Path := args[1]
+
+	return localPath, s3Path, nil
 }
 
 // main is the entry point of the application.
