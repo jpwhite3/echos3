@@ -317,7 +317,7 @@ func parseFlags() (bool, *AppConfig, []string, error) {
 // validateArgs validates command line arguments and returns the local path and S3 path.
 func validateArgs(args []string) (string, string, error) {
 	if len(args) != 2 {
-		return "", "", fmt.Errorf("Usage: echos3 [flags] /path/to/watch s3://bucket/key")
+		return "", "", fmt.Errorf("usage: echos3 [flags] /path/to/watch s3://bucket/key")
 	}
 
 	localPath := args[0]

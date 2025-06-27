@@ -1,0 +1,22 @@
+# .golangci.yml - Configuration for golangci-lint v1
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - revive
+    - gosec
+    - gocritic
+  disable:
+    - lll
+
+run:
+  timeout: 5m
