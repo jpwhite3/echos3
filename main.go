@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"mime"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/fsnotify/fsnotify"
+	"github.com/spf13/cobra"
 )
 
 // Version can be set at build time
@@ -116,11 +118,18 @@ func (p *UploadWorkerPool) processUpload(ctx context.Context, localFile, s3Key s
 	s3URI := fmt.Sprintf("s3://%s/%s", p.bucket, s3Key)
 	log.Printf("UPLOAD: %s -> %s", filepath.Base(localFile), s3URI)
 
+	// Determine content type
+	contentType := mime.TypeByExtension(filepath.Ext(localFile))
+
 	input := &s3.PutObjectInput{
 		Bucket:       aws.String(p.bucket),
 		Key:          aws.String(s3Key),
 		Body:         file,
 		StorageClass: p.storageClass,
+	}
+	if contentType != "" {
+		input.ContentType = aws.String(contentType)
+		log.Printf("INFO: Detected Content-Type: %s for %s", contentType, filepath.Base(localFile))
 	}
 
 	_, err = p.uploader.Upload(ctx, input)
@@ -171,7 +180,7 @@ type AppConfig struct {
 func getDefaultConcurrency() int {
 	// Use number of CPUs as a baseline
 	numCPU := runtime.NumCPU()
-	
+
 	// For systems with many cores, we don't want to create too many workers
 	// as network and disk I/O will become the bottleneck
 	switch {
@@ -186,31 +195,6 @@ func getDefaultConcurrency() int {
 	default:
 		return numCPU / 2 // For very high core counts, use half the cores
 	}
-}
-
-// parseFlags parses command-line flags and returns the configuration.
-func parseFlags() (showVersion bool, config *AppConfig, args []string, err error) {
-	deleteFlag := flag.Bool("delete", false, "Delete files in S3 when they are deleted locally.")
-	storageClassFlag := flag.String("storage-class", string(types.StorageClassIntelligentTiering), "Specify the S3 storage class (e.g., STANDARD, GLACIER).")
-	versionFlag := flag.Bool("version", false, "Print the echos3 version and exit.")
-	concurrencyFlag := flag.Int("concurrency", getDefaultConcurrency(), "Maximum number of concurrent uploads.")
-	flag.Parse()
-
-	config = &AppConfig{
-		Delete:        *deleteFlag,
-		StorageClass:  types.StorageClass(*storageClassFlag),
-		MaxConcurrent: *concurrencyFlag,
-	}
-
-	return *versionFlag, config, flag.Args(), nil
-}
-
-// validateArgs validates command-line arguments and returns the local path and S3 path.
-func validateArgs(args []string) (string, string, error) {
-	if len(args) != 2 {
-		return "", "", errors.New("incorrect number of arguments")
-	}
-	return args[0], args[1], nil
 }
 
 // setupLocalPath validates and sets up the local path.
@@ -252,49 +236,100 @@ func createApp(ctx context.Context, config *AppConfig, localPath string, isDir b
 	return app, nil
 }
 
+var rootCmd = &cobra.Command{
+	Use:   "echos3 [flags] /path/to/watch s3://bucket/key",
+	Short: "echos3 watches a local path and echoes changes to an S3 bucket.",
+	Long: `echos3 is a command-line tool that monitors a local directory or file
+for changes and replicates those changes (uploads, deletes) to a specified
+Amazon S3 bucket and key prefix.`,
+	Version: Version,
+	Args:    cobra.ExactArgs(2), // Expects exactly two arguments: localPath and s3Path
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// Retrieve flag values
+		deleteFlag, _ := cmd.Flags().GetBool("delete")
+		storageClassStr, _ := cmd.Flags().GetString("storage-class")
+		concurrency, _ := cmd.Flags().GetInt("concurrency")
+
+		config := &AppConfig{
+			Delete:        deleteFlag,
+			StorageClass:  types.StorageClass(storageClassStr),
+			MaxConcurrent: concurrency,
+		}
+
+		localPathArg := args[0]
+		s3Path := args[1]
+
+		// Setup local path
+		localPath, pathInfo, err := setupLocalPath(localPathArg)
+		if err != nil {
+			return fmt.Errorf("FATAL: %w", err)
+		}
+
+		// Parse S3 path
+		bucket, keyPrefix, err := parseS3Path(s3Path)
+		if err != nil {
+			return fmt.Errorf("FATAL: Invalid S3 path: %w", err)
+		}
+		config.Bucket = bucket
+		config.KeyPrefix = keyPrefix
+		config.LocalPath = localPath
+
+		// Create and run the application
+		ctx := cmd.Context()
+		app, err := createApp(ctx, config, localPath, pathInfo.IsDir())
+		if err != nil {
+			return fmt.Errorf("FATAL: %w", err)
+		}
+
+		return app.run(ctx)
+	},
+}
+
+func init() {
+	// Define flags
+	rootCmd.Flags().BoolP("delete", "d", false, "Delete files in S3 when they are deleted locally.")
+	rootCmd.Flags().StringP("storage-class", "s", string(types.StorageClassIntelligentTiering), "Specify the S3 storage class (e.g., STANDARD, GLACIER).")
+	rootCmd.Flags().IntP("concurrency", "c", getDefaultConcurrency(), "Maximum number of concurrent uploads.")
+	// Version flag is automatically added by cobra if `Version` field is set on rootCmd
+}
+
+// parseFlags parses command line flags and returns the showVersion flag, config, and arguments.
+func parseFlags() (bool, *AppConfig, []string, error) {
+	// Define flags
+	showVersionFlag := flag.Bool("version", false, "Show version information")
+	deleteFlag := flag.Bool("delete", false, "Delete files in S3 when they are deleted locally")
+	storageClassStr := flag.String("storage-class", string(types.StorageClassIntelligentTiering), "Specify the S3 storage class")
+	concurrency := flag.Int("concurrency", getDefaultConcurrency(), "Maximum number of concurrent uploads")
+
+	// Parse flags
+	flag.Parse()
+
+	// Create config
+	config := &AppConfig{
+		Delete:        *deleteFlag,
+		StorageClass:  types.StorageClass(*storageClassStr),
+		MaxConcurrent: *concurrency,
+	}
+
+	return *showVersionFlag, config, flag.Args(), nil
+}
+
+// validateArgs validates command line arguments and returns the local path and S3 path.
+func validateArgs(args []string) (string, string, error) {
+	if len(args) != 2 {
+		return "", "", fmt.Errorf("usage: echos3 [flags] /path/to/watch s3://bucket/key")
+	}
+
+	localPath := args[0]
+	s3Path := args[1]
+
+	return localPath, s3Path, nil
+}
+
 // main is the entry point of the application.
 func main() {
-	// Parse flags
-	showVersion, config, args, err := parseFlags()
-	if err != nil {
-		log.Fatalf("FATAL: Failed to parse flags: %v", err)
-	}
-
-	if showVersion {
-		fmt.Printf("echos3 version %s\n", Version)
-		os.Exit(0)
-	}
-
-	// Validate arguments
-	localPathArg, s3Path, err := validateArgs(args)
-	if err != nil {
-		log.Fatal("Usage: echos3 /path/to/watch s3://bucket/key [--delete] [--storage-class STORAGE_CLASS]")
-	}
-
-	// Setup local path
-	localPath, pathInfo, err := setupLocalPath(localPathArg)
-	if err != nil {
+	if err := rootCmd.Execute(); err != nil {
 		log.Fatalf("FATAL: %v", err)
-	}
-
-	// Parse S3 path
-	bucket, keyPrefix, err := parseS3Path(s3Path)
-	if err != nil {
-		log.Fatalf("FATAL: Invalid S3 path: %v", err)
-	}
-	config.Bucket = bucket
-	config.KeyPrefix = keyPrefix
-	config.LocalPath = localPath
-
-	// Create and run the application
-	ctx := context.Background()
-	app, err := createApp(ctx, config, localPath, pathInfo.IsDir())
-	if err != nil {
-		log.Fatalf("FATAL: %v", err)
-	}
-
-	if err := app.run(ctx); err != nil {
-		log.Fatalf("FATAL: Application failed: %v", err)
 	}
 }
 
@@ -411,7 +446,7 @@ func (a *App) handleEvent(ctx context.Context, event fsnotify.Event, watcher *fs
 }
 
 // handleUpload queues a file for upload to S3 using the worker pool.
-func (a *App) handleUpload(ctx context.Context, localFile, s3Key string) {
+func (a *App) handleUpload(_ context.Context, localFile, s3Key string) {
 	// Queue the upload job to be processed by the worker pool
 	a.workerPool.QueueUpload(localFile, s3Key)
 }

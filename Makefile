@@ -85,10 +85,10 @@ lint:
 	fi
 	@golangci-lint run
 
-# Install golangci-lint
+# Install golangci-lint latest stable version
 install-linter:
-	@echo "Installing golangci-lint..."
-	@go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	@echo "Installing golangci-lint v2.1.6..."
+	@go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
 
 # Install the application to your GOPATH/bin directory
 install:
