@@ -25,17 +25,12 @@ var testBinaryPath string
 // TestMain compiles the application binary once before running tests.
 // This is used for integration tests that execute the CLI directly.
 func TestMain(m *testing.M) {
-	var err error
 	// Create a temporary directory for the compiled binary
 	tmpDir, err := os.MkdirTemp("", "test-bin")
 	if err != nil {
-		log.Fatalf("failed to create temp dir for test binary: %v", err)
+		log.Printf("failed to create temp dir for test binary: %v", err)
+		os.Exit(1)
 	}
-	defer func() {
-		if err := os.RemoveAll(tmpDir); err != nil {
-			log.Printf("Error removing temp dir %s: %v", tmpDir, err)
-		}
-	}()
 
 	testBinaryPath = filepath.Join(tmpDir, "echos3")
 	if runtime.GOOS == "windows" {
@@ -44,13 +39,27 @@ func TestMain(m *testing.M) {
 
 	// Build the binary with a specific version for testing
 	buildCmd := exec.Command("go", "build", "-ldflags", "-X main.Version=test", "-o", testBinaryPath, ".")
-	if output, err := buildCmd.CombinedOutput(); err != nil {
-		log.Fatalf("failed to build test binary: %s", output)
+	output, err := buildCmd.CombinedOutput()
+	if err != nil {
+		log.Printf("failed to build test binary: %s", output)
+		// Clean up before exiting
+		cleanupErr := os.RemoveAll(tmpDir)
+		if cleanupErr != nil {
+			log.Printf("Error removing temp dir %s: %v", tmpDir, cleanupErr)
+		}
+		os.Exit(1)
 	}
 
 	// Run all tests
-	code := m.Run()
-	os.Exit(code)
+	exitCode := m.Run()
+
+	// Clean up before exiting
+	cleanupErr := os.RemoveAll(tmpDir)
+	if cleanupErr != nil {
+		log.Printf("Error removing temp dir %s: %v", tmpDir, cleanupErr)
+	}
+
+	os.Exit(exitCode)
 }
 
 // MockS3Uploader is a mock implementation of the S3Uploader interface for testing.
@@ -153,7 +162,7 @@ func TestApp_handleEvent(t *testing.T) {
 		t.Run("Create file should trigger upload with relative key", func(t *testing.T) {
 			app, mockUploader, tmpDir := newTestApp(t, false, true) // isDir = true
 			testFile := filepath.Join(tmpDir, "newfile.txt")
-			require.NoError(t, os.WriteFile(testFile, []byte("content"), 0644))
+			require.NoError(t, os.WriteFile(testFile, []byte("content"), 0600))
 
 			event := fsnotify.Event{Name: testFile, Op: fsnotify.Create}
 			app.handleEvent(context.Background(), event, watcher)
@@ -171,7 +180,7 @@ func TestApp_handleEvent(t *testing.T) {
 		t.Run("Create file with no extension should have no content type", func(t *testing.T) {
 			app, mockUploader, tmpDir := newTestApp(t, false, true) // isDir = true
 			testFile := filepath.Join(tmpDir, "newfilewithoutextension")
-			require.NoError(t, os.WriteFile(testFile, []byte("content"), 0644))
+			require.NoError(t, os.WriteFile(testFile, []byte("content"), 0600))
 
 			event := fsnotify.Event{Name: testFile, Op: fsnotify.Create}
 			app.handleEvent(context.Background(), event, watcher)
@@ -188,7 +197,7 @@ func TestApp_handleEvent(t *testing.T) {
 		t.Run("Create common image file type should trigger upload with correct content type", func(t *testing.T) {
 			app, mockUploader, tmpDir := newTestApp(t, false, true) // isDir = true
 			testFile := filepath.Join(tmpDir, "image.jpg")
-			require.NoError(t, os.WriteFile(testFile, []byte("image data"), 0644))
+			require.NoError(t, os.WriteFile(testFile, []byte("image data"), 0600))
 
 			event := fsnotify.Event{Name: testFile, Op: fsnotify.Create}
 			app.handleEvent(context.Background(), event, watcher)
@@ -221,7 +230,7 @@ func TestApp_handleEvent(t *testing.T) {
 			app, mockUploader, tmpDir := newTestApp(t, false, false) // isDir = false
 			watchedFile := filepath.Join(tmpDir, "watched.txt")
 			app.localPath = watchedFile // Explicitly set the path to the file
-			require.NoError(t, os.WriteFile(watchedFile, []byte("content"), 0644))
+			require.NoError(t, os.WriteFile(watchedFile, []byte("content"), 0600))
 
 			event := fsnotify.Event{Name: watchedFile, Op: fsnotify.Write}
 			app.handleEvent(context.Background(), event, watcher)
@@ -241,7 +250,7 @@ func TestApp_handleEvent(t *testing.T) {
 			watchedFile := filepath.Join(tmpDir, "watched.txt")
 			otherFile := filepath.Join(tmpDir, "other.txt")
 			app.localPath = watchedFile
-			require.NoError(t, os.WriteFile(otherFile, []byte("content"), 0644))
+			require.NoError(t, os.WriteFile(otherFile, []byte("content"), 0600))
 
 			event := fsnotify.Event{Name: otherFile, Op: fsnotify.Write}
 			app.handleEvent(context.Background(), event, watcher)
@@ -284,7 +293,7 @@ func TestApp_handleUpload_Errors(t *testing.T) {
 		app, mockUploader, tmpDir := newTestApp(t, false, true)
 		mockUploader.UploadErr = errors.New("S3 is down")
 		testFile := filepath.Join(tmpDir, "upload-fail.txt")
-		require.NoError(t, os.WriteFile(testFile, []byte("content"), 0644))
+		require.NoError(t, os.WriteFile(testFile, []byte("content"), 0600))
 
 		// Queue the upload
 		app.handleUpload(context.Background(), testFile, "test-prefix/upload-fail.txt")
@@ -365,7 +374,7 @@ func TestIntegration_ValidArguments(t *testing.T) {
 	// Create a temporary directory for the test
 	tmpDir := t.TempDir()
 	testFile := filepath.Join(tmpDir, "test.txt")
-	require.NoError(t, os.WriteFile(testFile, []byte("test content"), 0644))
+	require.NoError(t, os.WriteFile(testFile, []byte("test content"), 0600))
 
 	// Create a mock S3 bucket name (we won't actually connect to S3)
 	bucketName := "test-bucket-" + filepath.Base(tmpDir)
@@ -580,7 +589,7 @@ func TestCreateApp(t *testing.T) {
 	}()
 
 	// Set up a mock S3 client creator that returns a valid client
-	newS3Client = func(ctx context.Context) (*S3Client, error) {
+	newS3Client = func(_ context.Context) (*S3Client, error) {
 		return &S3Client{client: nil}, nil
 	}
 
@@ -616,7 +625,7 @@ func TestCreateApp(t *testing.T) {
 
 	t.Run("S3 client creation failure", func(t *testing.T) {
 		// Make newS3Client return an error
-		newS3Client = func(ctx context.Context) (*S3Client, error) {
+		newS3Client = func(_ context.Context) (*S3Client, error) {
 			return nil, errors.New("failed to create S3 client")
 		}
 
@@ -638,14 +647,14 @@ func TestMainFlow(t *testing.T) {
 	}()
 
 	// Create a mock S3 client creator
-	newS3Client = func(ctx context.Context) (*S3Client, error) {
+	newS3Client = func(_ context.Context) (*S3Client, error) {
 		return &S3Client{client: nil}, nil
 	}
 
 	// Create a temporary directory and file for testing
 	tmpDir := t.TempDir()
 	testFile := filepath.Join(tmpDir, "test.txt")
-	require.NoError(t, os.WriteFile(testFile, []byte("test content"), 0644))
+	require.NoError(t, os.WriteFile(testFile, []byte("test content"), 0600))
 
 	// Save original command line arguments and restore them after the test
 	oldArgs := os.Args

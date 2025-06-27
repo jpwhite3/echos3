@@ -446,7 +446,7 @@ func (a *App) handleEvent(ctx context.Context, event fsnotify.Event, watcher *fs
 }
 
 // handleUpload queues a file for upload to S3 using the worker pool.
-func (a *App) handleUpload(ctx context.Context, localFile, s3Key string) {
+func (a *App) handleUpload(_ context.Context, localFile, s3Key string) {
 	// Queue the upload job to be processed by the worker pool
 	a.workerPool.QueueUpload(localFile, s3Key)
 }
