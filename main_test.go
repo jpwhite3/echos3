@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/fsnotify/fsnotify"
@@ -64,10 +65,12 @@ func TestMain(m *testing.M) {
 
 // MockS3Uploader is a mock implementation of the S3Uploader interface for testing.
 type MockS3Uploader struct {
-	Uploads   map[string]*s3.PutObjectInput
-	Deletes   map[string]*s3.DeleteObjectInput
-	UploadErr error
-	DeleteErr error
+	Uploads        map[string]*s3.PutObjectInput
+	Deletes        map[string]*s3.DeleteObjectInput
+	ListObjectsRes *s3.ListObjectsV2Output
+	UploadErr      error
+	DeleteErr      error
+	ListObjectsErr error
 }
 
 func newMockS3Uploader() *MockS3Uploader {
@@ -91,6 +94,16 @@ func (m *MockS3Uploader) DeleteObject(_ context.Context, input *s3.DeleteObjectI
 	}
 	m.Deletes[*input.Key] = input
 	return &s3.DeleteObjectOutput{}, nil
+}
+
+func (m *MockS3Uploader) ListObjectsV2(_ context.Context, _ *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
+	if m.ListObjectsErr != nil {
+		return nil, m.ListObjectsErr
+	}
+	if m.ListObjectsRes != nil {
+		return m.ListObjectsRes, nil
+	}
+	return &s3.ListObjectsV2Output{}, nil
 }
 
 // newTestApp is a helper to set up the App struct for testing.
@@ -333,6 +346,83 @@ func TestApp_run_Errors(t *testing.T) {
 		err := app.run(context.Background())
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to watch directory")
+	})
+}
+
+func TestApp_doSync(t *testing.T) {
+	t.Run("Sync directory with missing local files", func(t *testing.T) {
+		app, mockUploader, tmpDir := newTestApp(t, true, true)
+		app.sync = true
+		app.delete = true
+
+		// Create a local file
+		localFile1 := filepath.Join(tmpDir, "file1.txt")
+		require.NoError(t, os.WriteFile(localFile1, []byte("content 1"), 0600))
+		localFile2 := filepath.Join(tmpDir, "file2.txt") // out of sync size
+		require.NoError(t, os.WriteFile(localFile2, []byte("different size content"), 0600))
+
+		// Set up mock S3 list response
+		mockUploader.ListObjectsRes = &s3.ListObjectsV2Output{
+			Contents: []types.Object{
+				{
+					Key:  aws.String("test-prefix/file2.txt"),
+					Size: aws.Int64(9), // 9 bytes ("content 2" is 9 chars) -> local is 22
+				},
+				{
+					Key:  aws.String("test-prefix/file3.txt"),
+					Size: aws.Int64(10), // Only exists in S3
+				},
+			},
+		}
+
+		err := app.doSync(context.Background())
+		require.NoError(t, err)
+
+		// Wait for worker pool
+		app.workerPool.Shutdown()
+
+		// file1.txt should be uploaded (exists locally, not in S3)
+		assert.Contains(t, mockUploader.Uploads, "test-prefix/file1.txt")
+
+		// file2.txt should be uploaded (exists in both, but local size is different)
+		assert.Contains(t, mockUploader.Uploads, "test-prefix/file2.txt")
+
+		// file3.txt should be deleted (exists in S3, not locally, delete=true)
+		assert.Contains(t, mockUploader.Deletes, "test-prefix/file3.txt")
+	})
+
+	t.Run("Sync directory without delete flag", func(t *testing.T) {
+		app, mockUploader, tmpDir := newTestApp(t, false, true)
+		app.sync = true
+		app.delete = false // delete flag off
+
+		localFile1 := filepath.Join(tmpDir, "file1.txt")
+		require.NoError(t, os.WriteFile(localFile1, []byte("content 1"), 0600))
+
+		mockUploader.ListObjectsRes = &s3.ListObjectsV2Output{
+			Contents: []types.Object{
+				{
+					Key:  aws.String("test-prefix/file1.txt"),
+					Size: aws.Int64(9), // Matches local
+				},
+				{
+					Key:  aws.String("test-prefix/file3.txt"),
+					Size: aws.Int64(10), // Only exists in S3
+				},
+			},
+		}
+
+		err := app.doSync(context.Background())
+		require.NoError(t, err)
+
+		// Wait for worker pool
+		app.workerPool.Shutdown()
+
+		// file1.txt size matches, should NOT be uploaded
+		assert.NotContains(t, mockUploader.Uploads, "test-prefix/file1.txt")
+
+		// file3.txt exists in S3 but not locally. Because delete is false, it should NOT be deleted.
+		assert.Empty(t, mockUploader.Deletes)
 	})
 }
 

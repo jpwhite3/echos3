@@ -30,6 +30,7 @@ var Version = "dev"
 type S3Uploader interface {
 	Upload(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error)
 	DeleteObject(ctx context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error)
+	ListObjectsV2(ctx context.Context, input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error)
 }
 
 // S3Client is a wrapper for the official AWS S3 client that implements our S3Uploader interface.
@@ -45,6 +46,11 @@ func (c *S3Client) Upload(ctx context.Context, input *s3.PutObjectInput) (*s3.Pu
 // DeleteObject deletes an object from an S3 bucket.
 func (c *S3Client) DeleteObject(ctx context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
 	return c.client.DeleteObject(ctx, input)
+}
+
+// ListObjectsV2 lists objects in an S3 bucket.
+func (c *S3Client) ListObjectsV2(ctx context.Context, input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
+	return c.client.ListObjectsV2(ctx, input)
 }
 
 // S3ClientCreator is a function type for creating S3 clients
@@ -160,6 +166,7 @@ type App struct {
 	bucket        string
 	keyPrefix     string
 	delete        bool
+	sync          bool
 	storageClass  types.StorageClass
 	workerPool    *UploadWorkerPool
 	maxConcurrent int
@@ -171,6 +178,7 @@ type AppConfig struct {
 	Bucket        string
 	KeyPrefix     string
 	Delete        bool
+	Sync          bool
 	StorageClass  types.StorageClass
 	MaxConcurrent int
 }
@@ -226,6 +234,7 @@ func createApp(ctx context.Context, config *AppConfig, localPath string, isDir b
 		bucket:        config.Bucket,
 		keyPrefix:     config.KeyPrefix,
 		delete:        config.Delete,
+		sync:          config.Sync,
 		storageClass:  config.StorageClass,
 		maxConcurrent: config.MaxConcurrent,
 	}
@@ -247,11 +256,13 @@ Amazon S3 bucket and key prefix.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Retrieve flag values
 		deleteFlag, _ := cmd.Flags().GetBool("delete")
+		syncFlag, _ := cmd.Flags().GetBool("sync")
 		storageClassStr, _ := cmd.Flags().GetString("storage-class")
 		concurrency, _ := cmd.Flags().GetInt("concurrency")
 
 		config := &AppConfig{
 			Delete:        deleteFlag,
+			Sync:          syncFlag,
 			StorageClass:  types.StorageClass(storageClassStr),
 			MaxConcurrent: concurrency,
 		}
@@ -288,6 +299,7 @@ Amazon S3 bucket and key prefix.`,
 func init() {
 	// Define flags
 	rootCmd.Flags().BoolP("delete", "d", false, "Delete files in S3 when they are deleted locally.")
+	rootCmd.Flags().BoolP("sync", "", false, "Scan the source and destination and sync them before listening for changes.")
 	rootCmd.Flags().StringP("storage-class", "s", string(types.StorageClassIntelligentTiering), "Specify the S3 storage class (e.g., STANDARD, GLACIER).")
 	rootCmd.Flags().IntP("concurrency", "c", getDefaultConcurrency(), "Maximum number of concurrent uploads.")
 	// Version flag is automatically added by cobra if `Version` field is set on rootCmd
@@ -298,6 +310,7 @@ func parseFlags() (bool, *AppConfig, []string, error) {
 	// Define flags
 	showVersionFlag := flag.Bool("version", false, "Show version information")
 	deleteFlag := flag.Bool("delete", false, "Delete files in S3 when they are deleted locally")
+	syncFlag := flag.Bool("sync", false, "Scan the source and destination and sync them before listening for changes")
 	storageClassStr := flag.String("storage-class", string(types.StorageClassIntelligentTiering), "Specify the S3 storage class")
 	concurrency := flag.Int("concurrency", getDefaultConcurrency(), "Maximum number of concurrent uploads")
 
@@ -307,6 +320,7 @@ func parseFlags() (bool, *AppConfig, []string, error) {
 	// Create config
 	config := &AppConfig{
 		Delete:        *deleteFlag,
+		Sync:          *syncFlag,
 		StorageClass:  types.StorageClass(*storageClassStr),
 		MaxConcurrent: *concurrency,
 	}
@@ -371,6 +385,13 @@ func (a *App) run(ctx context.Context) error {
 		log.Printf("INFO: Watching single file %s in directory %s", filepath.Base(a.localPath), parentDir)
 		if err := watcher.Add(parentDir); err != nil {
 			return fmt.Errorf("failed to watch directory %s for file changes: %w", parentDir, err)
+		}
+	}
+
+	// Perform initial sync if requested
+	if a.sync {
+		if err := a.doSync(ctx); err != nil {
+			return fmt.Errorf("initial sync failed: %w", err)
 		}
 	}
 
@@ -488,4 +509,107 @@ func parseS3Path(s3Path string) (bucket, keyPrefix string, err error) {
 	}
 
 	return bucket, keyPrefix, nil
+}
+
+// doSync performs an initial synchronization between the local path and S3.
+func (a *App) doSync(ctx context.Context) error {
+	log.Printf("INFO: Starting sync process for %s...", a.localPath)
+
+	// 1. Fetch remote objects
+	remoteObjects := make(map[string]int64) // key -> size
+	var continuationToken *string
+
+	for {
+		input := &s3.ListObjectsV2Input{
+			Bucket:            aws.String(a.bucket),
+			Prefix:            aws.String(a.keyPrefix),
+			ContinuationToken: continuationToken,
+		}
+
+		output, err := a.uploader.ListObjectsV2(ctx, input)
+		if err != nil {
+			return fmt.Errorf("failed to list objects in S3: %w", err)
+		}
+
+		for _, obj := range output.Contents {
+			if obj.Key != nil && obj.Size != nil {
+				remoteObjects[*obj.Key] = *obj.Size
+			}
+		}
+
+		if output.IsTruncated != nil && *output.IsTruncated {
+			continuationToken = output.NextContinuationToken
+		} else {
+			break
+		}
+	}
+
+	// 2. Fetch local objects and determine uploads
+	localObjects := make(map[string]bool)
+
+	if a.isDir {
+		err := filepath.Walk(a.localPath, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				return nil
+			}
+
+			relPath, err := filepath.Rel(a.localPath, path)
+			if err != nil {
+				return fmt.Errorf("failed to get relative path for %s: %w", path, err)
+			}
+			// Use filepath.ToSlash to ensure S3 keys use forward slashes
+			s3Key := filepath.ToSlash(filepath.Join(a.keyPrefix, relPath))
+			// Handle the case where keyPrefix is empty correctly
+			if a.keyPrefix == "" {
+				s3Key = filepath.ToSlash(relPath)
+			}
+			localObjects[s3Key] = true
+
+			remoteSize, exists := remoteObjects[s3Key]
+			if !exists || remoteSize != info.Size() {
+				a.handleUpload(ctx, path, s3Key)
+			}
+
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("failed to walk local directory during sync: %w", err)
+		}
+	} else {
+		info, err := os.Stat(a.localPath)
+		if err != nil {
+			return fmt.Errorf("failed to stat local file %s during sync: %w", a.localPath, err)
+		}
+
+		s3Key := a.keyPrefix
+		// If the prefix is empty or ends with a slash, we should append the filename
+		if a.keyPrefix == "" || strings.HasSuffix(a.keyPrefix, "/") {
+			s3Key = a.keyPrefix + filepath.Base(a.localPath)
+		}
+		localObjects[s3Key] = true
+
+		remoteSize, exists := remoteObjects[s3Key]
+		if !exists || remoteSize != info.Size() {
+			a.handleUpload(ctx, a.localPath, s3Key)
+		}
+	}
+
+	// 3. Determine deletions
+	if a.delete {
+		for s3Key := range remoteObjects {
+			if !localObjects[s3Key] {
+				a.handleRemove(ctx, s3Key)
+			}
+		}
+	}
+
+	// Note: The uploads and deletions are queued to the worker pool.
+	// We could wait for them here, but the worker pool doesn't currently expose a Wait method.
+	// For now, they will run concurrently as the watcher starts.
+
+	log.Println("INFO: Sync process completed.")
+	return nil
 }
