@@ -1,6 +1,5 @@
 package main
 
-
 import (
 	"context"
 	"errors"
@@ -66,12 +65,12 @@ func TestMain(m *testing.M) {
 
 // MockS3Uploader is a mock implementation of the S3Uploader interface for testing.
 type MockS3Uploader struct {
-	Uploads         map[string]*s3.PutObjectInput
-	Deletes         map[string]*s3.DeleteObjectInput
-	ListObjectsRes  *s3.ListObjectsV2Output
-	UploadErr       error
-	DeleteErr       error
-	ListObjectsErr  error
+	Uploads        map[string]*s3.PutObjectInput
+	Deletes        map[string]*s3.DeleteObjectInput
+	ListObjectsRes *s3.ListObjectsV2Output
+	UploadErr      error
+	DeleteErr      error
+	ListObjectsErr error
 }
 
 func newMockS3Uploader() *MockS3Uploader {
