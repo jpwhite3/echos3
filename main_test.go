@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -65,6 +66,7 @@ func TestMain(m *testing.M) {
 
 // MockS3Uploader is a mock implementation of the S3Uploader interface for testing.
 type MockS3Uploader struct {
+	mu             sync.Mutex
 	Uploads        map[string]*s3.PutObjectInput
 	Deletes        map[string]*s3.DeleteObjectInput
 	ListObjectsRes *s3.ListObjectsV2Output
@@ -81,6 +83,8 @@ func newMockS3Uploader() *MockS3Uploader {
 }
 
 func (m *MockS3Uploader) Upload(_ context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.UploadErr != nil {
 		return nil, m.UploadErr
 	}
@@ -89,6 +93,8 @@ func (m *MockS3Uploader) Upload(_ context.Context, input *s3.PutObjectInput) (*s
 }
 
 func (m *MockS3Uploader) DeleteObject(_ context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.DeleteErr != nil {
 		return nil, m.DeleteErr
 	}
@@ -97,6 +103,8 @@ func (m *MockS3Uploader) DeleteObject(_ context.Context, input *s3.DeleteObjectI
 }
 
 func (m *MockS3Uploader) ListObjectsV2(_ context.Context, _ *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.ListObjectsErr != nil {
 		return nil, m.ListObjectsErr
 	}

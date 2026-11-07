@@ -30,9 +30,9 @@ jobs:
         run: go mod tidy
 
       - name: Run Linter
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: v1.64.6
+          version: v2.1
 
       - name: Run Unit Tests with Coverage
         run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
