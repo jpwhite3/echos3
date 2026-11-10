@@ -27,6 +27,13 @@ jobs:
         with:
           go-version: '1.24'
 
+      - name: Get next version
+        id: version
+        uses: reecetech/version-increment@2024.4.2
+        with:
+          scheme: semver
+          increment: patch
+
       - name: Generate Changelog
         id: changelog
         continue-on-error: true
@@ -35,13 +42,6 @@ jobs:
           echo "" >> RELEASE_NOTES.md
           echo "## Changes since last release:" >> RELEASE_NOTES.md
           git log $(git describe --tags --abbrev=0 2>/dev/null || echo HEAD~10)..HEAD --pretty=format:"- %s" | grep -v "Merge" >> RELEASE_NOTES.md
-
-      - name: Get next version
-        id: version
-        uses: reecetech/version-increment@2024.4.2
-        with:
-          scheme: semver
-          increment: patch
 
       - name: Build Release Binaries
         run: |
@@ -93,13 +93,13 @@ jobs:
           mkdir -p tmp
           
           echo "Downloading AMD64 binary..."
-          if ! curl -L -o tmp/echos3-darwin-amd64 https://github.com/jpwhite3/echos3/releases/download/v${{ steps.version.outputs.version }}/echos3-darwin-amd64; then
+          if ! curl -fL -o tmp/echos3-darwin-amd64 https://github.com/jpwhite3/echos3/releases/download/v${{ steps.version.outputs.version }}/echos3-darwin-amd64; then
             echo "::error::Failed to download AMD64 binary"
             exit 1
           fi
           
           echo "Downloading ARM64 binary..."
-          if ! curl -L -o tmp/echos3-darwin-arm64 https://github.com/jpwhite3/echos3/releases/download/v${{ steps.version.outputs.version }}/echos3-darwin-arm64; then
+          if ! curl -fL -o tmp/echos3-darwin-arm64 https://github.com/jpwhite3/echos3/releases/download/v${{ steps.version.outputs.version }}/echos3-darwin-arm64; then
             echo "::error::Failed to download ARM64 binary"
             exit 1
           fi
